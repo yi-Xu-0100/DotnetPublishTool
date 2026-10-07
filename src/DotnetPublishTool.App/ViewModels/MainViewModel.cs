@@ -1,0 +1,1133 @@
+using System.Collections.ObjectModel;
+using System.Collections.Specialized;
+using System.ComponentModel;
+using System.Diagnostics;
+using System.IO;
+using System.Text;
+using DotnetPublishTool.App.Services;
+using DotnetPublishTool.Core.Models;
+using DotnetPublishTool.Core.Services;
+
+namespace DotnetPublishTool.App.ViewModels;
+
+public sealed class MainViewModel : ObservableObject
+{
+    private static readonly string[] KnownRuntimeIdentifiers =
+    [
+        "win-x64", "win-x86", "win-arm64",
+        "linux-x64", "linux-arm64",
+        "osx-x64", "osx-arm64",
+    ];
+
+    private readonly IDialogService _dialogs;
+    private readonly AppSettingsService _settingsService;
+    private readonly ProjectInspector _inspector;
+    private readonly PublishProfileStore _profileStore;
+    private readonly PublishWorkflow _workflow;
+    private readonly StringBuilder _logBuilder = new();
+    private readonly object _logLock = new();
+
+    private const int MaxRecentProjects = 20;
+
+    private CancellationTokenSource? _cancellation;
+    private string? _lastProjectPath;
+    private bool _initialized;
+    private RecentProject? _selectedRecentProject;
+
+    private string _projectPath = string.Empty;
+    private ProjectInfo? _selectedProject;
+    private PublishProfile? _selectedProfile;
+
+    private string _outputRoot = PathLayout.DefaultOutputRoot;
+    private string _configuration = "Release";
+    private string? _targetFramework;
+    private string? _runtimeIdentifier;
+    private bool _selfContained;
+    private bool _publishSingleFile;
+    private bool _publishReadyToRun;
+    private bool _publishTrimmed;
+    private string _environmentName = string.Empty;
+    private string _versionOverride = string.Empty;
+    private bool _cleanPublishDirectory = true;
+    private bool _noRestore;
+
+    private bool _makeZip = true;
+    private ZipNamingMode _zipNamingMode = ZipNamingMode.ProjectNameDate;
+    private string _zipDateFormat = ZipOptions.DefaultDateFormat;
+    private string _customZipName = string.Empty;
+    private bool _zipIncludeRootFolder;
+
+    private string _profilePreviewXml = string.Empty;
+    private string _logText = string.Empty;
+    private string _statusText = "请选择一个 dotnet 项目或解决方案。";
+    private bool _isBusy;
+
+    public MainViewModel(
+        IDialogService dialogs,
+        AppSettingsService settingsService,
+        ProjectInspector inspector,
+        PublishProfileStore profileStore,
+        PublishWorkflow workflow)
+    {
+        _dialogs = dialogs;
+        _settingsService = settingsService;
+        _inspector = inspector;
+        _profileStore = profileStore;
+        _workflow = workflow;
+
+        BrowseProjectCommand = new AsyncRelayCommand(BrowseProjectAsync, () => !IsBusy);
+        RescanCommand = new AsyncRelayCommand(RescanAsync, () => !IsBusy && !string.IsNullOrWhiteSpace(ProjectPath));
+        BrowseOutputRootCommand = new RelayCommand(BrowseOutputRoot, () => !IsBusy);
+        ClearLogCommand = new RelayCommand(ClearLog);
+        ClearRecentProjectsCommand = new RelayCommand(ClearRecentProjects, () => RecentProjects.Count > 0);
+        SaveProfileCommand = new RelayCommand(() => SaveProfileOnly(), () => !IsBusy && SelectedProject is not null);
+        OpenOutputFolderCommand = new RelayCommand(OpenOutputFolder, () => SelectedProject is not null);
+        CancelCommand = new RelayCommand(Cancel, () => IsBusy);
+        PublishCommand = new AsyncRelayCommand(PublishAsync, () => !IsBusy && SelectedProject is not null);
+
+        ExtraProperties.CollectionChanged += OnExtraPropertiesChanged;
+    }
+
+    public ObservableCollection<ProjectInfo> Projects { get; } = [];
+
+    public ObservableCollection<PublishProfile> Profiles { get; } = [];
+
+    /// <summary>最近选择的项目 / 解决方案，最近的在前。</summary>
+    public ObservableCollection<RecentProject> RecentProjects { get; } = [];
+
+    public ObservableCollection<PropertyRow> ExtraProperties { get; } = [];
+
+    public ObservableCollection<string> TargetFrameworks { get; } = [];
+
+    public IReadOnlyList<string> RuntimeIdentifiers { get; } = KnownRuntimeIdentifiers;
+
+    public IReadOnlyList<string> Configurations { get; } = ["Debug", "Release"];
+
+    /// <summary>运行时依赖：两个选项都显式列出来，避免只看「自包含」复选框猜反。</summary>
+    public IReadOnlyList<DeploymentModeOption> DeploymentModes { get; } =
+    [
+        new("框架依赖（目标机需自备 .NET 运行时）", false),
+        new("自包含（产物自带运行时，体积大）", true),
+    ];
+
+    public IReadOnlyList<ZipNamingOption> ZipNamingModes { get; } =
+    [
+        new("项目名", ZipNamingMode.ProjectName),
+        new("项目名_版本号", ZipNamingMode.ProjectNameVersion),
+        new("项目名_日期", ZipNamingMode.ProjectNameDate),
+        new("自定义", ZipNamingMode.Custom),
+    ];
+
+    public AsyncRelayCommand BrowseProjectCommand { get; }
+
+    public AsyncRelayCommand RescanCommand { get; }
+
+    public RelayCommand BrowseOutputRootCommand { get; }
+
+    public RelayCommand ClearLogCommand { get; }
+
+    public RelayCommand ClearRecentProjectsCommand { get; }
+
+    public RelayCommand SaveProfileCommand { get; }
+
+    public RelayCommand OpenOutputFolderCommand { get; }
+
+    public RelayCommand CancelCommand { get; }
+
+    public AsyncRelayCommand PublishCommand { get; }
+
+    public string ProjectPath
+    {
+        get => _projectPath;
+        private set => SetProperty(ref _projectPath, value);
+    }
+
+    public ProjectInfo? SelectedProject
+    {
+        get => _selectedProject;
+        set
+        {
+            if (!SetProperty(ref _selectedProject, value))
+            {
+                return;
+            }
+
+            OnPropertyChanged(nameof(ProjectSummary));
+            OnPropertyChanged(nameof(ProjectVersion));
+            OnPropertyChanged(nameof(PublishDirectoryPreview));
+            OnPropertyChanged(nameof(ZipPathPreview));
+
+            TargetFrameworks.Clear();
+            if (value is not null)
+            {
+                foreach (var framework in value.TargetFrameworks)
+                {
+                    TargetFrameworks.Add(framework);
+                }
+            }
+
+            LoadProfilesFor(value);
+            RaiseCommandStates();
+        }
+    }
+
+    /// <summary>下拉里选中的最近项目；选中即载入。</summary>
+    public RecentProject? SelectedRecentProject
+    {
+        get => _selectedRecentProject;
+        set
+        {
+            if (!SetProperty(ref _selectedRecentProject, value))
+            {
+                return;
+            }
+
+            if (value is null || string.IsNullOrWhiteSpace(value.FilePath))
+            {
+                return;
+            }
+
+            if (!File.Exists(value.FilePath))
+            {
+                _dialogs.ShowError(
+                    "最近的项目 / 解决方案已不存在：" + Environment.NewLine + value.FilePath + Environment.NewLine
+                    + "已从记录中移除。",
+                    "记录已失效");
+                RemoveRecent(value);
+                return;
+            }
+
+            _ = LoadPathAsync(value.FilePath);
+        }
+    }
+
+    public bool HasRecentProjects => RecentProjects.Count > 0;
+
+    public PublishProfile? SelectedProfile
+    {
+        get => _selectedProfile;
+        set
+        {
+            if (!SetProperty(ref _selectedProfile, value))
+            {
+                return;
+            }
+
+            ApplyProfile(value);
+        }
+    }
+
+    public string ProjectSummary => SelectedProject?.Summary ?? "（未选择项目）";
+
+    public string ProjectVersion => SelectedProject?.Version ?? "未解析";
+
+    public string OutputRoot
+    {
+        get => _outputRoot;
+        set
+        {
+            if (SetProperty(ref _outputRoot, value))
+            {
+                RebuildPreview();
+            }
+        }
+    }
+
+    public string Configuration
+    {
+        get => _configuration;
+        set
+        {
+            if (SetProperty(ref _configuration, value))
+            {
+                RebuildPreview();
+            }
+        }
+    }
+
+    public string? TargetFramework
+    {
+        get => _targetFramework;
+        set
+        {
+            if (SetProperty(ref _targetFramework, value))
+            {
+                RebuildPreview();
+            }
+        }
+    }
+
+    public string? RuntimeIdentifier
+    {
+        get => _runtimeIdentifier;
+        set
+        {
+            if (SetProperty(ref _runtimeIdentifier, value))
+            {
+                RebuildPreview();
+            }
+        }
+    }
+
+    public bool SelfContained
+    {
+        get => _selfContained;
+        set
+        {
+            if (SetProperty(ref _selfContained, value))
+            {
+                RebuildPreview();
+            }
+        }
+    }
+
+    public bool PublishSingleFile
+    {
+        get => _publishSingleFile;
+        set
+        {
+            if (SetProperty(ref _publishSingleFile, value))
+            {
+                RebuildPreview();
+            }
+        }
+    }
+
+    public bool PublishReadyToRun
+    {
+        get => _publishReadyToRun;
+        set
+        {
+            if (SetProperty(ref _publishReadyToRun, value))
+            {
+                RebuildPreview();
+            }
+        }
+    }
+
+    public bool PublishTrimmed
+    {
+        get => _publishTrimmed;
+        set
+        {
+            if (SetProperty(ref _publishTrimmed, value))
+            {
+                RebuildPreview();
+            }
+        }
+    }
+
+    public string EnvironmentName
+    {
+        get => _environmentName;
+        set
+        {
+            if (SetProperty(ref _environmentName, value))
+            {
+                RebuildPreview();
+            }
+        }
+    }
+
+    public string VersionOverride
+    {
+        get => _versionOverride;
+        set
+        {
+            if (SetProperty(ref _versionOverride, value))
+            {
+                RebuildPreview();
+            }
+        }
+    }
+
+    public bool CleanPublishDirectory
+    {
+        get => _cleanPublishDirectory;
+        set => SetProperty(ref _cleanPublishDirectory, value);
+    }
+
+    public bool NoRestore
+    {
+        get => _noRestore;
+        set => SetProperty(ref _noRestore, value);
+    }
+
+    public bool MakeZip
+    {
+        get => _makeZip;
+        set
+        {
+            if (SetProperty(ref _makeZip, value))
+            {
+                RebuildPreview();
+            }
+        }
+    }
+
+    public ZipNamingMode ZipNamingMode
+    {
+        get => _zipNamingMode;
+        set
+        {
+            if (SetProperty(ref _zipNamingMode, value))
+            {
+                OnPropertyChanged(nameof(IsDateNaming));
+                OnPropertyChanged(nameof(IsCustomNaming));
+                RebuildPreview();
+            }
+        }
+    }
+
+    public string ZipDateFormat
+    {
+        get => _zipDateFormat;
+        set
+        {
+            if (SetProperty(ref _zipDateFormat, value))
+            {
+                RebuildPreview();
+            }
+        }
+    }
+
+    public string CustomZipName
+    {
+        get => _customZipName;
+        set
+        {
+            if (SetProperty(ref _customZipName, value))
+            {
+                RebuildPreview();
+            }
+        }
+    }
+
+    public bool ZipIncludeRootFolder
+    {
+        get => _zipIncludeRootFolder;
+        set => SetProperty(ref _zipIncludeRootFolder, value);
+    }
+
+    /// <summary>一句话说明这次会发布成什么形态（框架依赖/自包含 + 运行时 + 其它开关）。</summary>
+    public string PublishModeSummary
+    {
+        get
+        {
+            var mode = SelfContained ? "自包含" : "框架依赖";
+            var rid = string.IsNullOrWhiteSpace(RuntimeIdentifier) ? "未指定运行时" : RuntimeIdentifier!.Trim();
+
+            var extras = new List<string>();
+            if (PublishSingleFile)
+            {
+                extras.Add("单文件");
+            }
+
+            if (PublishReadyToRun)
+            {
+                extras.Add("ReadyToRun");
+            }
+
+            if (PublishTrimmed)
+            {
+                extras.Add("裁剪");
+            }
+
+            var suffix = extras.Count == 0 ? string.Empty : " · " + string.Join(" + ", extras);
+            return $"发布方式：{mode} · {rid}{suffix}";
+        }
+    }
+
+    public bool IsDateNaming => ZipNamingMode == ZipNamingMode.ProjectNameDate;
+
+    public bool IsCustomNaming => ZipNamingMode == ZipNamingMode.Custom;
+
+    public string PublishDirectoryPreview => SelectedProject is null
+        ? "（未选择项目）"
+        : PathLayout.GetPublishDirectory(OutputRoot, SelectedProject.Name);
+
+    public string ZipPathPreview
+    {
+        get
+        {
+            if (SelectedProject is null)
+            {
+                return "（未选择项目）";
+            }
+
+            if (!MakeZip)
+            {
+                return "（未启用）";
+            }
+
+            var zip = new ZipOptions
+            {
+                NamingMode = ZipNamingMode,
+                DateFormat = string.IsNullOrWhiteSpace(ZipDateFormat) ? ZipOptions.DefaultDateFormat : ZipDateFormat.Trim(),
+                CustomName = NullIfEmpty(CustomZipName),
+                Version = NullIfEmpty(VersionOverride) ?? SelectedProject.Version,
+            };
+
+            var fileName = ZipNaming.Resolve(zip, SelectedProject.Name);
+            return Path.Combine(PathLayout.GetProjectRoot(OutputRoot, SelectedProject.Name), fileName);
+        }
+    }
+
+    public string ProfilePreviewXml
+    {
+        get => _profilePreviewXml;
+        private set => SetProperty(ref _profilePreviewXml, value);
+    }
+
+    public string LogText
+    {
+        get => _logText;
+        private set => SetProperty(ref _logText, value);
+    }
+
+    public string StatusText
+    {
+        get => _statusText;
+        private set => SetProperty(ref _statusText, value);
+    }
+
+    public bool IsBusy
+    {
+        get => _isBusy;
+        private set
+        {
+            if (SetProperty(ref _isBusy, value))
+            {
+                RaiseCommandStates();
+            }
+        }
+    }
+
+    /// <summary>从设置里恢复上次的输出目录与打包选项。</summary>
+    public void Initialize()
+    {
+        if (_initialized)
+        {
+            return;
+        }
+
+        _initialized = true;
+        var settings = _settingsService.Load();
+
+        OutputRoot = string.IsNullOrWhiteSpace(settings.OutputRoot) ? PathLayout.DefaultOutputRoot : settings.OutputRoot!;
+        MakeZip = settings.MakeZipAfterPublish;
+        ZipNamingMode = settings.ZipNamingMode;
+        ZipDateFormat = string.IsNullOrWhiteSpace(settings.ZipDateFormat) ? ZipOptions.DefaultDateFormat : settings.ZipDateFormat;
+        ZipIncludeRootFolder = settings.ZipIncludeRootFolder;
+        _lastProjectPath = settings.LastProjectPath;
+
+        RecentProjects.Clear();
+        foreach (var entry in settings.RecentProjects.Where(e => !string.IsNullOrWhiteSpace(e.FilePath)))
+        {
+            RecentProjects.Add(entry);
+        }
+
+        OnPropertyChanged(nameof(HasRecentProjects));
+        ClearRecentProjectsCommand.RaiseCanExecuteChanged();
+
+        var integrity = ProcessIntegrity.GetCurrent();
+        AppendLog("[环境] 进程完整性级别：" + ProcessIntegrity.Describe(integrity));
+        if (ProcessIntegrity.IsBelowMedium)
+        {
+            AppendLog("[环境] 低完整性进程写不了「文档」「%APPDATA%」等目录。");
+            AppendLog("[环境] 若产物被沙箱打过 Low 标签，请在普通终端运行 tools/fix-build-integrity.ps1 后用修复过的 exe 启动。");
+        }
+    }
+
+    /// <summary>窗口首次显示时调用，自动恢复上次的项目。</summary>
+    public void OnWindowLoaded()
+    {
+        // 优先恢复最近一次还能找到的项目；都没有则退回上次记录。
+        var candidate = RecentProjects.FirstOrDefault(r => File.Exists(r.FilePath))?.FilePath
+            ?? _lastProjectPath;
+
+        if (!string.IsNullOrWhiteSpace(candidate) && File.Exists(candidate))
+        {
+            _ = LoadPathAsync(candidate!);
+        }
+    }
+
+    /// <summary>加载项目文件或解决方案文件。</summary>
+    public async Task LoadPathAsync(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return;
+        }
+
+        try
+        {
+            IsBusy = true;
+            StatusText = "正在解析项目…";
+            Projects.Clear();
+            Profiles.Clear();
+            ExtraProperties.Clear();
+            SelectedProject = null;
+            SelectedProfile = null;
+
+            if (ProjectInspector.IsSolutionFile(path))
+            {
+                var projectPaths = SolutionParser.GetProjectPaths(path);
+                if (projectPaths.Count == 0)
+                {
+                    _dialogs.ShowError("该解决方案中没有找到可发布的 .csproj / .vbproj / .fsproj 项目文件。");
+                    StatusText = "解决方案中未找到项目。";
+                    return;
+                }
+
+                ProjectPath = Path.GetFullPath(path);
+                foreach (var projectPath in projectPaths)
+                {
+                    Projects.Add(await _inspector.InspectAsync(projectPath, ProjectPath).ConfigureAwait(true));
+                }
+
+                SelectedProject = Projects.FirstOrDefault();
+                StatusText = $"已从解决方案载入 {Projects.Count} 个项目。";
+                RecordRecent(ProjectPath);
+            }
+            else if (ProjectInspector.IsProjectFile(path))
+            {
+                var project = await _inspector.InspectAsync(path).ConfigureAwait(true);
+                ProjectPath = project.Path;
+                Projects.Add(project);
+                SelectedProject = project;
+                StatusText = "已载入项目：" + project.Name;
+                RecordRecent(project.Path);
+            }
+            else
+            {
+                _dialogs.ShowError("请选择 .csproj / .vbproj / .fsproj 项目文件，或 .sln / .slnx 解决方案文件。");
+                StatusText = "文件类型不支持。";
+            }
+        }
+        catch (Exception ex)
+        {
+            AppendLog("[错误] " + ex.Message);
+            _dialogs.ShowError(ex.Message, "载入失败");
+            StatusText = "载入失败。";
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    /// <summary>把当前生效的发布配置副本保存到默认目录（不发布）。</summary>
+    public string? SaveProfileOnly()
+    {
+        if (SelectedProject is null)
+        {
+            _dialogs.ShowError("请先选择一个项目。");
+            return null;
+        }
+
+        if (!EnsureOutputRootUsable())
+        {
+            return null;
+        }
+
+        var request = BuildRequest(withZip: false);
+        if (request is null)
+        {
+            _dialogs.ShowError("请先选择一个项目。");
+            return null;
+        }
+
+        try
+        {
+            var saved = _workflow.SaveProfile(request);
+            AppendLog("[配置] 已保存配置副本：" + saved.ProfilePath);
+            StatusText = "已保存配置副本。";
+            PersistSettings();
+            return saved.ProfilePath;
+        }
+        catch (Exception ex)
+        {
+            AppendLog("[错误] " + ex.Message);
+            _dialogs.ShowError(ex.Message, "保存配置失败");
+            return null;
+        }
+    }
+
+    /// <summary>生成并发布（按需打包）。</summary>
+    public async Task<PublishResult?> PublishAsync()
+    {
+        if (SelectedProject is null)
+        {
+            _dialogs.ShowError("请先选择一个项目。");
+            return null;
+        }
+
+        // 必须在 BuildRequest 之前：不可写时这里会把 OutputRoot 换成可写目录。
+        if (!EnsureOutputRootUsable())
+        {
+            return null;
+        }
+
+        WarnIfProjectDirectoryNotWritable();
+
+        var request = BuildRequest(withZip: true);
+        if (request is null)
+        {
+            _dialogs.ShowError("请先选择一个项目。");
+            return null;
+        }
+
+        if (!request.Project.IsSdkStyle)
+        {
+            _dialogs.ShowError("该项目不是 SDK 风格项目，dotnet publish 无法发布。");
+            return null;
+        }
+
+        if (request.Project.TargetFrameworks.Count > 1 && string.IsNullOrWhiteSpace(request.Options.TargetFramework))
+        {
+            _dialogs.ShowError("该项目包含多个目标框架，请先在「目标框架」中选择一个。");
+            return null;
+        }
+
+        _cancellation = new CancellationTokenSource();
+        IsBusy = true;
+        StatusText = "正在发布…";
+        AppendLog(string.Empty);
+        AppendLog("==================== " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + " ====================");
+
+        try
+        {
+            var progress = new Progress<string>(AppendLog);
+            var result = await _workflow.RunAsync(request, progress, _cancellation.Token).ConfigureAwait(true);
+
+            if (result.Success)
+            {
+                var extra = result.ZipPath is null ? string.Empty : "，已生成压缩包";
+                StatusText = $"发布成功：{result.FileCount} 个文件，用时 {result.Duration.TotalSeconds:F1}s{extra}。";
+                PersistSettings();
+            }
+            else
+            {
+                StatusText = "发布失败。";
+                _dialogs.ShowError(result.ErrorMessage ?? "发布失败。", "发布失败");
+            }
+
+            return result;
+        }
+        catch (OperationCanceledException)
+        {
+            AppendLog("[取消] 已取消发布。");
+            StatusText = "已取消。";
+            return null;
+        }
+        catch (Exception ex)
+        {
+            AppendLog("[异常] " + ex);
+            _dialogs.ShowError(ex.Message, "发布异常");
+            StatusText = "发布异常。";
+            return null;
+        }
+        finally
+        {
+            IsBusy = false;
+            _cancellation?.Dispose();
+            _cancellation = null;
+        }
+    }
+
+    private async Task BrowseProjectAsync()
+    {
+        var path = _dialogs.PickProjectFile();
+        if (!string.IsNullOrWhiteSpace(path))
+        {
+            await LoadPathAsync(path!);
+        }
+    }
+
+    private async Task RescanAsync()
+    {
+        if (!string.IsNullOrWhiteSpace(ProjectPath))
+        {
+            await LoadPathAsync(ProjectPath);
+        }
+    }
+
+    private void BrowseOutputRoot()
+    {
+        var picked = _dialogs.PickFolder(OutputRoot);
+        if (!string.IsNullOrWhiteSpace(picked))
+        {
+            OutputRoot = picked!;
+        }
+    }
+
+    private void ClearLog()
+    {
+        lock (_logLock)
+        {
+            _logBuilder.Clear();
+        }
+
+        LogText = string.Empty;
+    }
+
+    private void Cancel() => _cancellation?.Cancel();
+
+    private void OpenOutputFolder()
+    {
+        var directory = SelectedProject is null
+            ? OutputRoot
+            : PathLayout.GetProjectRoot(OutputRoot, SelectedProject.Name);
+
+        if (!Directory.Exists(directory))
+        {
+            _dialogs.ShowInfo("输出目录还不存在：" + directory);
+            return;
+        }
+
+        Process.Start(new ProcessStartInfo { FileName = directory, UseShellExecute = true });
+    }
+
+    private void LoadProfilesFor(ProjectInfo? project)
+    {
+        Profiles.Clear();
+
+        if (project is null)
+        {
+            ApplyProfile(null);
+            return;
+        }
+
+        foreach (var profile in _profileStore.Discover(project))
+        {
+            Profiles.Add(profile);
+        }
+
+        if (!string.IsNullOrWhiteSpace(project.EvaluationWarning))
+        {
+            AppendLog("[提示] " + project.EvaluationWarning);
+        }
+
+        SelectedProfile = Profiles.FirstOrDefault();
+    }
+
+    private void ApplyProfile(PublishProfile? profile)
+    {
+        var project = SelectedProject;
+
+        _configuration = profile?.GetValue("Configuration") ?? "Release";
+        _targetFramework = profile?.GetValue("TargetFramework")
+            ?? (project?.TargetFrameworks.Count == 1 ? project.TargetFrameworks[0] : null);
+        _runtimeIdentifier = profile?.GetValue("RuntimeIdentifier");
+        _selfContained = profile?.GetBool("SelfContained") ?? false;
+        _publishSingleFile = profile?.GetBool("PublishSingleFile") ?? false;
+        _publishReadyToRun = profile?.GetBool("PublishReadyToRun") ?? false;
+        _publishTrimmed = profile?.GetBool("PublishTrimmed") ?? false;
+        _environmentName = profile?.GetValue("EnvironmentName") ?? string.Empty;
+        _versionOverride = profile?.GetValue("Version") ?? string.Empty;
+
+        ExtraProperties.Clear();
+        if (profile is not null)
+        {
+            foreach (var property in profile.Properties.Where(p => !PublishOptionKeys.IsCurated(p.Key)))
+            {
+                ExtraProperties.Add(new PropertyRow(property.Key, property.Value));
+            }
+        }
+
+        OnPropertyChanged(nameof(Configuration));
+        OnPropertyChanged(nameof(TargetFramework));
+        OnPropertyChanged(nameof(RuntimeIdentifier));
+        OnPropertyChanged(nameof(SelfContained));
+        OnPropertyChanged(nameof(PublishSingleFile));
+        OnPropertyChanged(nameof(PublishReadyToRun));
+        OnPropertyChanged(nameof(PublishTrimmed));
+        OnPropertyChanged(nameof(EnvironmentName));
+        OnPropertyChanged(nameof(VersionOverride));
+        RebuildPreview();
+    }
+
+    private PublishRequest? BuildRequest(bool withZip)
+    {
+        var project = SelectedProject;
+        if (project is null)
+        {
+            return null;
+        }
+
+        var options = new PublishOptions
+        {
+            Configuration = string.IsNullOrWhiteSpace(Configuration) ? "Release" : Configuration.Trim(),
+            TargetFramework = NullIfEmpty(TargetFramework),
+            RuntimeIdentifier = NullIfEmpty(RuntimeIdentifier),
+            SelfContained = SelfContained,
+            PublishSingleFile = PublishSingleFile,
+            PublishReadyToRun = PublishReadyToRun,
+            PublishTrimmed = PublishTrimmed,
+            EnvironmentName = NullIfEmpty(EnvironmentName),
+            VersionOverride = NullIfEmpty(VersionOverride),
+            CleanPublishDirectory = CleanPublishDirectory,
+            NoRestore = NoRestore,
+        };
+
+        var zip = new ZipOptions
+        {
+            Enabled = withZip && MakeZip,
+            NamingMode = ZipNamingMode,
+            DateFormat = string.IsNullOrWhiteSpace(ZipDateFormat) ? ZipOptions.DefaultDateFormat : ZipDateFormat.Trim(),
+            IncludeRootFolder = ZipIncludeRootFolder,
+            CustomName = NullIfEmpty(CustomZipName),
+            Version = options.VersionOverride ?? project.Version,
+        };
+
+        return new PublishRequest
+        {
+            Project = project,
+            Options = options,
+            OutputRoot = string.IsNullOrWhiteSpace(OutputRoot) ? PathLayout.DefaultOutputRoot : OutputRoot.Trim(),
+            ProfileName = SelectedProfile?.Name ?? PublishProfileStore.DefaultProfileName,
+            ExtraProperties = ExtraProperties
+                .Where(row => !string.IsNullOrWhiteSpace(row.Key))
+                .Select(row => row.ToProperty())
+                .ToList(),
+            SourceItemGroupsXml = SelectedProfile?.ItemGroupsXml,
+            Zip = zip,
+        };
+    }
+
+    private void RebuildPreview()
+    {
+        var request = BuildRequest(withZip: false);
+        if (request is null)
+        {
+            ProfilePreviewXml = string.Empty;
+        }
+        else
+        {
+            var publishDirectory = PathLayout.GetPublishDirectory(request.OutputRoot, request.Project.Name);
+            var properties = PublishWorkflow.BuildEffectiveProperties(request, publishDirectory);
+            ProfilePreviewXml = PublishWorkflow.RenderProfileXml(properties);
+        }
+
+        OnPropertyChanged(nameof(PublishDirectoryPreview));
+        OnPropertyChanged(nameof(ZipPathPreview));
+        OnPropertyChanged(nameof(PublishModeSummary));
+    }
+
+    private void OnExtraPropertiesChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    {
+        if (e.NewItems is not null)
+        {
+            foreach (PropertyRow row in e.NewItems)
+            {
+                row.PropertyChanged += OnExtraRowChanged;
+            }
+        }
+
+        if (e.OldItems is not null)
+        {
+            foreach (PropertyRow row in e.OldItems)
+            {
+                row.PropertyChanged -= OnExtraRowChanged;
+            }
+        }
+
+        RebuildPreview();
+    }
+
+    private void OnExtraRowChanged(object? sender, PropertyChangedEventArgs e) => RebuildPreview();
+
+    /// <summary>把路径记到「最近项目」列表头部（去重、限长）并立即持久化。</summary>
+    private void RecordRecent(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return;
+        }
+
+        string fullPath;
+        try
+        {
+            fullPath = Path.GetFullPath(path);
+        }
+        catch
+        {
+            return;
+        }
+
+        var existing = RecentProjects.FirstOrDefault(
+            r => string.Equals(r.FilePath, fullPath, StringComparison.OrdinalIgnoreCase));
+        if (existing is not null)
+        {
+            RecentProjects.Remove(existing);
+        }
+
+        var entry = new RecentProject { FilePath = fullPath, LastUsed = DateTimeOffset.Now };
+        RecentProjects.Insert(0, entry);
+
+        while (RecentProjects.Count > MaxRecentProjects)
+        {
+            RecentProjects.RemoveAt(RecentProjects.Count - 1);
+        }
+
+        // 直接写字段，避免触发 setter 再次载入。
+        _selectedRecentProject = entry;
+        OnPropertyChanged(nameof(SelectedRecentProject));
+        OnPropertyChanged(nameof(HasRecentProjects));
+        ClearRecentProjectsCommand.RaiseCanExecuteChanged();
+        PersistSettings();
+    }
+
+    private void RemoveRecent(RecentProject entry)
+    {
+        RecentProjects.Remove(entry);
+        if (ReferenceEquals(_selectedRecentProject, entry))
+        {
+            _selectedRecentProject = null;
+            OnPropertyChanged(nameof(SelectedRecentProject));
+        }
+
+        OnPropertyChanged(nameof(HasRecentProjects));
+        ClearRecentProjectsCommand.RaiseCanExecuteChanged();
+        PersistSettings();
+    }
+
+    private void ClearRecentProjects()
+    {
+        RecentProjects.Clear();
+        _selectedRecentProject = null;
+        OnPropertyChanged(nameof(SelectedRecentProject));
+        OnPropertyChanged(nameof(HasRecentProjects));
+        ClearRecentProjectsCommand.RaiseCanExecuteChanged();
+        PersistSettings();
+        AppendLog("[记录] 已清除最近项目记录。");
+    }
+
+    /// <summary>
+    /// 用一次真实的写探测确认输出根目录可用；不可用时自动切换到第一个可写候选目录并明确告知。
+    /// 这样在「文档」被保护或进程处于受限/沙箱环境时，不会再抛出 UnauthorizedAccessException。
+    /// </summary>
+    private bool EnsureOutputRootUsable()
+    {
+        var preferred = string.IsNullOrWhiteSpace(OutputRoot) ? PathLayout.DefaultOutputRoot : OutputRoot.Trim();
+        var reason = OutputDirectoryService.TryEnsureWritable(preferred);
+        if (reason is null)
+        {
+            return true;
+        }
+
+        var hint = BuildIntegrityHint();
+        var reasonText = reason + (hint is null ? string.Empty : Environment.NewLine + hint);
+
+        AppendLog($"[警告] 输出目录不可写：{preferred}");
+        AppendLog($"[警告] 原因：{reason}");
+        if (hint is not null)
+        {
+            AppendLog("[警告] " + hint);
+        }
+
+        foreach (var candidate in OutputDirectoryService.GetFallbackRoots())
+        {
+            if (string.Equals(candidate, preferred, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (OutputDirectoryService.TryEnsureWritable(candidate) is not null)
+            {
+                continue;
+            }
+
+            OutputRoot = candidate;
+            AppendLog($"[提示] 已自动改用可写目录：{candidate}");
+            StatusText = "原输出目录不可写，已改用：" + candidate;
+            _dialogs.ShowInfo(
+                "输出目录不可写：" + Environment.NewLine + preferred + Environment.NewLine
+                + "原因：" + reasonText + Environment.NewLine + Environment.NewLine
+                + "已自动改用可写目录：" + Environment.NewLine + candidate,
+                "输出目录已自动切换");
+            return true;
+        }
+
+        var message = "输出目录不可写，也没有找到可用的替代目录。" + Environment.NewLine + Environment.NewLine
+            + "目录：" + preferred + Environment.NewLine
+            + "原因：" + reasonText;
+        AppendLog("[错误] " + message.Replace(Environment.NewLine, " "));
+        StatusText = "输出目录不可写。";
+        _dialogs.ShowError(message, "输出目录不可写");
+        return false;
+    }
+
+    /// <summary>进程完整性低于 Medium 时，给出「为什么写不了」以及可执行的修复动作。</summary>
+    private static string? BuildIntegrityHint()
+    {
+        if (!ProcessIntegrity.IsBelowMedium)
+        {
+            return null;
+        }
+
+        return "当前进程完整性级别为 " + ProcessIntegrity.Describe(ProcessIntegrity.GetCurrent())
+            + "：低完整性进程只能写 Low 对象，写「文档」「%APPDATA%」这类常规用户目录会被系统拒绝，与 ACL 无关。"
+            + "常见原因是构建产物被沙箱/受限环境打上了 Low 标签 —— 请在普通（非沙箱）终端运行 tools/fix-build-integrity.ps1，"
+            + "然后用修复过的 exe 重新启动。";
+    }
+
+    /// <summary>dotnet publish 需要写项目目录下的 obj/bin；不可写时提前提示，避免只看到 MSBuild 的报错。</summary>
+    private void WarnIfProjectDirectoryNotWritable()
+    {
+        var project = SelectedProject;
+        if (project is null)
+        {
+            return;
+        }
+
+        var reason = OutputDirectoryService.TryEnsureWritable(project.Directory);
+        if (reason is not null)
+        {
+            AppendLog($"[警告] 项目目录不可写（{reason}）：{project.Directory}");
+            AppendLog("[警告] dotnet publish 需要在该目录下写 obj/bin，发布可能因此失败。");
+        }
+    }
+
+    private void PersistSettings()
+    {
+        _settingsService.Save(new AppSettings
+        {
+            SettingsVersion = AppSettings.CurrentSettingsVersion,
+            OutputRoot = OutputRoot,
+            MakeZipAfterPublish = MakeZip,
+            ZipNamingMode = ZipNamingMode,
+            ZipDateFormat = ZipDateFormat,
+            ZipIncludeRootFolder = ZipIncludeRootFolder,
+            LastProjectPath = string.IsNullOrWhiteSpace(ProjectPath) ? _lastProjectPath : ProjectPath,
+            RecentProjects = RecentProjects.ToList(),
+        });
+    }
+
+    private void RaiseCommandStates()
+    {
+        BrowseProjectCommand.RaiseCanExecuteChanged();
+        RescanCommand.RaiseCanExecuteChanged();
+        BrowseOutputRootCommand.RaiseCanExecuteChanged();
+        SaveProfileCommand.RaiseCanExecuteChanged();
+        OpenOutputFolderCommand.RaiseCanExecuteChanged();
+        CancelCommand.RaiseCanExecuteChanged();
+        PublishCommand.RaiseCanExecuteChanged();
+    }
+
+    private void AppendLog(string line)
+    {
+        string snapshot;
+        lock (_logLock)
+        {
+            _logBuilder.AppendLine(line);
+            snapshot = _logBuilder.ToString();
+        }
+
+        LogText = snapshot;
+    }
+
+    private static string? NullIfEmpty(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+}
