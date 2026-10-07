@@ -1,0 +1,30 @@
+## .NET 构建产物
+bin/
+obj/
+[Dd]ebug/
+[Rr]elease/
+artifacts/
+publish/
+
+## IDE
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+## 本工具自身产生的临时/验证目录
+.scratch/
+.selftest/
+.smoke-out/
+.artifacts-verify/
+.zip-verify/
+.render-out/
+tools/DotnetPublishTool.Smoke/out/
+
+## 其他
+*.log
+Thumbs.db
+desktop.ini

@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="src/DotnetPublishTool.Core/DotnetPublishTool.Core.csproj" />
+  <Project Path="src/DotnetPublishTool.App/DotnetPublishTool.App.csproj" />
+  <Project Path="tools/DotnetPublishTool.Smoke/DotnetPublishTool.Smoke.csproj" />
+  <Project Path="samples/SampleConsoleApp/SampleConsoleApp.csproj" />
+</Solution>
