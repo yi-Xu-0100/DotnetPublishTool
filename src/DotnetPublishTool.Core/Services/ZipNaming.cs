@@ -5,19 +5,32 @@ namespace DotnetPublishTool.Core.Services;
 /// <summary>按约定的三种口径解析压缩包文件名。</summary>
 public static class ZipNaming
 {
-    public static string Resolve(ZipOptions options, string projectName)
+    public static string Resolve(ZipOptions options, string projectName) =>
+        Resolve(options.NamingMode, options.DateFormat, options.CustomName, options.Version, projectName, ".zip");
+
+    /// <summary>
+    /// 按命名口径解析包名。MSI 安装包沿用同一套口径，只把扩展名换成 .msi，
+    /// 让「zip / 安装包」两种产物在界面上是同一套命名习惯。
+    /// </summary>
+    public static string Resolve(
+        ZipNamingMode mode,
+        string? dateFormat,
+        string? customName,
+        string? version,
+        string baseName,
+        string extension)
     {
-        var name = options.NamingMode switch
+        var name = mode switch
         {
-            ZipNamingMode.ProjectName => projectName,
-            ZipNamingMode.ProjectNameVersion => projectName + "_" + NormalizeVersion(options.Version),
-            ZipNamingMode.ProjectNameDate => projectName + "_" + DateTime.Now.ToString(
-                string.IsNullOrWhiteSpace(options.DateFormat) ? ZipOptions.DefaultDateFormat : options.DateFormat),
-            ZipNamingMode.Custom => string.IsNullOrWhiteSpace(options.CustomName) ? projectName : options.CustomName!,
-            _ => projectName,
+            ZipNamingMode.ProjectName => baseName,
+            ZipNamingMode.ProjectNameVersion => baseName + "_" + NormalizeVersion(version),
+            ZipNamingMode.ProjectNameDate => baseName + "_" + DateTime.Now.ToString(
+                string.IsNullOrWhiteSpace(dateFormat) ? ZipOptions.DefaultDateFormat : dateFormat),
+            ZipNamingMode.Custom => string.IsNullOrWhiteSpace(customName) ? baseName : customName!,
+            _ => baseName,
         };
 
-        return PathLayout.Sanitize(name) + ".zip";
+        return PathLayout.Sanitize(name) + extension;
     }
 
     public static string Describe(ZipNamingMode mode) => mode switch

@@ -61,6 +61,7 @@
         <Grid.ColumnDefinitions>
           <ColumnDefinition Width="*" />
           <ColumnDefinition Width="*" />
+          <ColumnDefinition Width="*" />
         </Grid.ColumnDefinitions>
 
         <StackPanel Grid.Column="0" Margin="0,0,12,0">
@@ -113,6 +114,53 @@
                     ToolTip="默认不勾选：解压出来就是文件本身；勾选后多一层以项目名命名的文件夹" />
           <TextBlock Text="{Binding ZipPathPreview, StringFormat=压缩包：{0}}" TextWrapping="Wrap"
                      Foreground="{StaticResource TextSecondary}" Margin="0,6,0,0" />
+        </StackPanel>
+
+        <StackPanel Grid.Column="2" Margin="12,0,0,0">
+          <TextBlock Text="MSI 安装包" Style="{StaticResource SectionHeader}" />
+          <CheckBox Content="发布成功后生成 MSI 安装包" IsChecked="{Binding MakeMsi}"
+                    ToolTip="安装包把发布产物装到 Program Files，并出现在「程序和功能」里，可用 msiexec 静默安装/卸载" />
+          <Grid Margin="0,6,0,0">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="Auto" />
+              <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <TextBlock Grid.Column="0" Text="产品名：" Style="{StaticResource FieldLabel}" />
+            <TextBox Grid.Column="1" Text="{Binding MsiProductName, UpdateSourceTrigger=PropertyChanged}"
+                     ToolTip="「程序和功能」与开始菜单里显示的名字；留空用项目名" />
+          </Grid>
+          <Grid Margin="0,6,0,0">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="Auto" />
+              <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <TextBlock Grid.Column="0" Text="发布者：" Style="{StaticResource FieldLabel}" />
+            <TextBox Grid.Column="1" Text="{Binding MsiManufacturer, UpdateSourceTrigger=PropertyChanged}"
+                     ToolTip="安装包「发布者」；留空用产品名" />
+          </Grid>
+          <Grid Margin="0,6,0,0">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="Auto" />
+              <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <TextBlock Grid.Column="0" Text="命名方式：" Style="{StaticResource FieldLabel}" />
+            <ComboBox Grid.Column="1" ItemsSource="{Binding MsiNamingModes}" DisplayMemberPath="Label"
+                      SelectedValuePath="Value" SelectedValue="{Binding MsiNamingMode}" />
+          </Grid>
+          <Grid Margin="0,6,0,0">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="Auto" />
+              <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <TextBlock Grid.Column="0" Text="自定义名称：" Style="{StaticResource FieldLabel}" />
+            <TextBox Grid.Column="1" Text="{Binding MsiCustomName, UpdateSourceTrigger=PropertyChanged}"
+                     IsEnabled="{Binding IsMsiCustomNaming}" />
+          </Grid>
+          <CheckBox Content="创建开始菜单快捷方式" IsChecked="{Binding MsiCreateShortcut}" Margin="0,8,0,0"
+                    ToolTip="快捷方式指向发布产物里的主程序，卸载时一并移除" />
+          <TextBlock Text="{Binding MsiPathPreview, StringFormat=安装包：{0}}" TextWrapping="Wrap"
+                     Foreground="{StaticResource TextSecondary}" Margin="0,6,0,0"
+                     ToolTip="安装版本按 MSI 规则规整为 x.y.z（不合法时用 1.0.0）" />
         </StackPanel>
       </Grid>
     </Border>

@@ -16,6 +16,12 @@ public sealed class PublishResult
     /// <summary>生成的压缩包路径（未打包为 null）。</summary>
     public string? ZipPath { get; init; }
 
+    /// <summary>生成的 MSI 安装包路径（未生成或生成失败为 null）。</summary>
+    public string? MsiPath { get; init; }
+
+    /// <summary>MSI 生成失败的原因。发布本身已成功时，这里才有值。</summary>
+    public string? MsiError { get; init; }
+
     public string CommandLine { get; init; } = string.Empty;
 
     public TimeSpan Duration { get; init; }

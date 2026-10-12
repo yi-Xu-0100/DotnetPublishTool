@@ -4,7 +4,7 @@
 
 ## 这是什么
 
-WPF 图形化的 dotnet 发布/打包工具：选项目 → 找发布配置 → 按配置或修改后的配置发布到默认目录 → 可选打 zip。功能与用法见 [README.md](README.md)。
+WPF 图形化的 dotnet 发布/打包工具：选项目 → 找发布配置 → 按配置或修改后的配置发布到默认目录 → 可选打 zip、可选生成装到 Program Files 的 MSI 安装包。功能与用法见 [README.md](README.md)。
 
 ## 什么情况下读哪个文档
 
@@ -20,6 +20,8 @@ WPF 图形化的 dotnet 发布/打包工具：选项目 → 找发布配置 → 
 - 发布编排（核心，先看这里）：`src/DotnetPublishTool.Core/Services/PublishWorkflow.cs`
 - 项目探查与类型识别：`src/DotnetPublishTool.Core/Services/ProjectInspector.cs`
 - 命令行构造：`src/DotnetPublishTool.Core/Services/PublishCommandBuilder.cs`
+- MSI 安装包：`src/DotnetPublishTool.Core/Services/MsiPackageBuilder.cs`（配合 MsiDatabase / MsiNative / CabinetBuilder）
+- 本工具自身的安装包：`tools/make-installer.ps1`（**必须在普通终端跑**，自带沙箱检测）
 - 界面：`src/DotnetPublishTool.App/MainWindow.xaml`、`src/DotnetPublishTool.App/ViewModels/MainViewModel.cs`
 - 端到端验证：`tools/DotnetPublishTool.Smoke`、`src/DotnetPublishTool.App/SelfTest.cs`
 
@@ -42,6 +44,7 @@ dotnet run --project tools/DotnetPublishTool.Smoke -- publish samples/SampleCons
 
 - **解决方案级构建需要 `-m:1`**。在受限 shell / DSH 沙箱里，MSBuild 多节点并行通信会被拦，`dotnet build DotnetPublishTool.slnx` 会以「0 错误但生成失败」的形态失败；加 `-m:1` 即可（普通终端无此问题）。单项目构建不受影响。
 - **本机访问 nuget.org 不可达**。需要新 NuGet 包的发布（`PublishSingleFile`、自包含等）会报 `NU1301`；普通的框架依赖发布不受影响。
+- **本仓库的 `.ps1` 是 UTF-8 with BOM**：Windows PowerShell 5.1 读无 BOM 的 `.ps1` 会按 ANSI 解码，脚本里的中文会变乱码并报语法错误。编辑工具可能吃掉 BOM —— 改完 `tools/*.ps1` 后确认头三字节是 `EF BB BF`，换行保持 CRLF（`.gitattributes` 已声明 `*.ps1 text eol=crlf`）。
 - **完整性标签（Mandatory Label / Low）**：机制、定性方法与"沙箱自测必须用独立目录"的通用规则见全局 `~/.dsh/AGENTS.md`，这里只记本仓库特有的事。
   - 修复脚本：`tools/fix-build-integrity.ps1`（**必须在普通终端跑**；脚本自带沙箱检测，会拒绝在沙箱内执行）。
   - 本仓库的 `bin`/`obj` **已升为 Medium**，因此沙箱内不能再直接构建。沙箱内验证走重定向输出：

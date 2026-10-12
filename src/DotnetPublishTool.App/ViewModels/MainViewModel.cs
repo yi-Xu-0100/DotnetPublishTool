@@ -57,6 +57,13 @@ public sealed class MainViewModel : ObservableObject
     private string _customZipName = string.Empty;
     private bool _zipIncludeRootFolder;
 
+    private bool _makeMsi;
+    private string _msiProductName = string.Empty;
+    private string _msiManufacturer = string.Empty;
+    private bool _msiCreateShortcut = true;
+    private ZipNamingMode _msiNamingMode = ZipNamingMode.ProjectNameVersion;
+    private string _msiCustomName = string.Empty;
+
     private string _profilePreviewXml = string.Empty;
     private string _logText = string.Empty;
     private string _statusText = "请选择一个 dotnet 项目或解决方案。";
@@ -118,6 +125,14 @@ public sealed class MainViewModel : ObservableObject
         new("自定义", ZipNamingMode.Custom),
     ];
 
+    /// <summary>安装包命名：默认带版本号，方便同时存在多个版本的安装包。</summary>
+    public IReadOnlyList<ZipNamingOption> MsiNamingModes { get; } =
+    [
+        new("产品名", ZipNamingMode.ProjectName),
+        new("产品名_版本号", ZipNamingMode.ProjectNameVersion),
+        new("自定义", ZipNamingMode.Custom),
+    ];
+
     public AsyncRelayCommand BrowseProjectCommand { get; }
 
     public AsyncRelayCommand RescanCommand { get; }
@@ -156,6 +171,7 @@ public sealed class MainViewModel : ObservableObject
             OnPropertyChanged(nameof(ProjectVersion));
             OnPropertyChanged(nameof(PublishDirectoryPreview));
             OnPropertyChanged(nameof(ZipPathPreview));
+            OnPropertyChanged(nameof(MsiPathPreview));
 
             TargetFrameworks.Clear();
             if (value is not null)
@@ -409,6 +425,70 @@ public sealed class MainViewModel : ObservableObject
         set => SetProperty(ref _zipIncludeRootFolder, value);
     }
 
+    /// <summary>发布成功后是否生成 MSI 安装包（装到 Program Files）。</summary>
+    public bool MakeMsi
+    {
+        get => _makeMsi;
+        set
+        {
+            if (SetProperty(ref _makeMsi, value))
+            {
+                RebuildPreview();
+            }
+        }
+    }
+
+    public string MsiProductName
+    {
+        get => _msiProductName;
+        set
+        {
+            if (SetProperty(ref _msiProductName, value))
+            {
+                RebuildPreview();
+            }
+        }
+    }
+
+    public string MsiManufacturer
+    {
+        get => _msiManufacturer;
+        set => SetProperty(ref _msiManufacturer, value);
+    }
+
+    public bool MsiCreateShortcut
+    {
+        get => _msiCreateShortcut;
+        set => SetProperty(ref _msiCreateShortcut, value);
+    }
+
+    public ZipNamingMode MsiNamingMode
+    {
+        get => _msiNamingMode;
+        set
+        {
+            if (SetProperty(ref _msiNamingMode, value))
+            {
+                OnPropertyChanged(nameof(IsMsiCustomNaming));
+                RebuildPreview();
+            }
+        }
+    }
+
+    public string MsiCustomName
+    {
+        get => _msiCustomName;
+        set
+        {
+            if (SetProperty(ref _msiCustomName, value))
+            {
+                RebuildPreview();
+            }
+        }
+    }
+
+    public bool IsMsiCustomNaming => MsiNamingMode == ZipNamingMode.Custom;
+
     /// <summary>一句话说明这次会发布成什么形态（框架依赖/自包含 + 运行时 + 其它开关）。</summary>
     public string PublishModeSummary
     {
@@ -473,6 +553,35 @@ public sealed class MainViewModel : ObservableObject
         }
     }
 
+    /// <summary>安装包路径预览（产品名留空时按项目名，版本按 MSI 规则规整）。</summary>
+    public string MsiPathPreview
+    {
+        get
+        {
+            if (SelectedProject is null)
+            {
+                return "（未选择项目）";
+            }
+
+            if (!MakeMsi)
+            {
+                return "（未启用）";
+            }
+
+            var productName = string.IsNullOrWhiteSpace(MsiProductName) ? SelectedProject.Name : MsiProductName.Trim();
+            var version = MsiVersion.Normalize(NullIfEmpty(VersionOverride) ?? SelectedProject.Version);
+            var fileName = ZipNaming.Resolve(
+                MsiNamingMode,
+                ZipOptions.DefaultDateFormat,
+                NullIfEmpty(MsiCustomName),
+                version,
+                productName,
+                ".msi");
+
+            return Path.Combine(PathLayout.GetProjectRoot(OutputRoot, SelectedProject.Name), fileName);
+        }
+    }
+
     public string ProfilePreviewXml
     {
         get => _profilePreviewXml;
@@ -519,6 +628,12 @@ public sealed class MainViewModel : ObservableObject
         ZipNamingMode = settings.ZipNamingMode;
         ZipDateFormat = string.IsNullOrWhiteSpace(settings.ZipDateFormat) ? ZipOptions.DefaultDateFormat : settings.ZipDateFormat;
         ZipIncludeRootFolder = settings.ZipIncludeRootFolder;
+        MakeMsi = settings.MakeMsiAfterPublish;
+        MsiProductName = settings.MsiProductName ?? string.Empty;
+        MsiManufacturer = settings.MsiManufacturer ?? string.Empty;
+        MsiCreateShortcut = settings.MsiCreateShortcut;
+        MsiNamingMode = settings.MsiNamingMode;
+        MsiCustomName = settings.MsiCustomName ?? string.Empty;
         _lastProjectPath = settings.LastProjectPath;
 
         RecentProjects.Clear();
@@ -631,7 +746,7 @@ public sealed class MainViewModel : ObservableObject
             return null;
         }
 
-        var request = BuildRequest(withZip: false);
+        var request = BuildRequest(forPackaging: false);
         if (request is null)
         {
             _dialogs.ShowError("请先选择一个项目。");
@@ -671,7 +786,7 @@ public sealed class MainViewModel : ObservableObject
 
         WarnIfProjectDirectoryNotWritable();
 
-        var request = BuildRequest(withZip: true);
+        var request = BuildRequest(forPackaging: true);
         if (request is null)
         {
             _dialogs.ShowError("请先选择一个项目。");
@@ -703,9 +818,29 @@ public sealed class MainViewModel : ObservableObject
 
             if (result.Success)
             {
-                var extra = result.ZipPath is null ? string.Empty : "，已生成压缩包";
+                var extras = new List<string>();
+                if (result.ZipPath is not null)
+                {
+                    extras.Add("已生成压缩包");
+                }
+
+                if (result.MsiPath is not null)
+                {
+                    extras.Add("已生成 MSI 安装包");
+                }
+
+                var extra = extras.Count == 0 ? string.Empty : "，" + string.Join("、", extras);
                 StatusText = $"发布成功：{result.FileCount} 个文件，用时 {result.Duration.TotalSeconds:F1}s{extra}。";
                 PersistSettings();
+
+                if (result.MsiError is not null)
+                {
+                    _dialogs.ShowError(
+                        "发布已完成，但 MSI 安装包没有生成成功：" + Environment.NewLine + Environment.NewLine
+                        + result.MsiError + Environment.NewLine + Environment.NewLine
+                        + "发布产物仍在发布目录里，可在普通终端重跑一次打包。",
+                        "MSI 生成失败");
+                }
             }
             else
             {
@@ -848,7 +983,7 @@ public sealed class MainViewModel : ObservableObject
         RebuildPreview();
     }
 
-    private PublishRequest? BuildRequest(bool withZip)
+    private PublishRequest? BuildRequest(bool forPackaging)
     {
         var project = SelectedProject;
         if (project is null)
@@ -873,11 +1008,22 @@ public sealed class MainViewModel : ObservableObject
 
         var zip = new ZipOptions
         {
-            Enabled = withZip && MakeZip,
+            Enabled = forPackaging && MakeZip,
             NamingMode = ZipNamingMode,
             DateFormat = string.IsNullOrWhiteSpace(ZipDateFormat) ? ZipOptions.DefaultDateFormat : ZipDateFormat.Trim(),
             IncludeRootFolder = ZipIncludeRootFolder,
             CustomName = NullIfEmpty(CustomZipName),
+            Version = options.VersionOverride ?? project.Version,
+        };
+
+        var msi = new MsiOptions
+        {
+            Enabled = forPackaging && MakeMsi,
+            ProductName = NullIfEmpty(MsiProductName),
+            Manufacturer = NullIfEmpty(MsiManufacturer),
+            CreateShortcut = MsiCreateShortcut,
+            NamingMode = MsiNamingMode,
+            CustomName = NullIfEmpty(MsiCustomName),
             Version = options.VersionOverride ?? project.Version,
         };
 
@@ -893,12 +1039,13 @@ public sealed class MainViewModel : ObservableObject
                 .ToList(),
             SourceItemGroupsXml = SelectedProfile?.ItemGroupsXml,
             Zip = zip,
+            Msi = msi,
         };
     }
 
     private void RebuildPreview()
     {
-        var request = BuildRequest(withZip: false);
+        var request = BuildRequest(forPackaging: false);
         if (request is null)
         {
             ProfilePreviewXml = string.Empty;
@@ -912,6 +1059,7 @@ public sealed class MainViewModel : ObservableObject
 
         OnPropertyChanged(nameof(PublishDirectoryPreview));
         OnPropertyChanged(nameof(ZipPathPreview));
+        OnPropertyChanged(nameof(MsiPathPreview));
         OnPropertyChanged(nameof(PublishModeSummary));
     }
 
@@ -1100,6 +1248,12 @@ public sealed class MainViewModel : ObservableObject
             ZipNamingMode = ZipNamingMode,
             ZipDateFormat = ZipDateFormat,
             ZipIncludeRootFolder = ZipIncludeRootFolder,
+            MakeMsiAfterPublish = MakeMsi,
+            MsiProductName = NullIfEmpty(MsiProductName),
+            MsiManufacturer = NullIfEmpty(MsiManufacturer),
+            MsiCreateShortcut = MsiCreateShortcut,
+            MsiNamingMode = MsiNamingMode,
+            MsiCustomName = NullIfEmpty(MsiCustomName),
             LastProjectPath = string.IsNullOrWhiteSpace(ProjectPath) ? _lastProjectPath : ProjectPath,
             RecentProjects = RecentProjects.ToList(),
         });

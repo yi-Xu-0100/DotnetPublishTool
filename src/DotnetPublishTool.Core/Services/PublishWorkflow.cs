@@ -14,17 +14,20 @@ public sealed class PublishWorkflow
     private readonly PublishCommandBuilder _commandBuilder;
     private readonly DotnetProcessRunner _runner;
     private readonly ZipPackager _zipPackager;
+    private readonly MsiPackageBuilder _msiBuilder;
 
     public PublishWorkflow(
         PublishProfileStore profileStore,
         PublishCommandBuilder commandBuilder,
         DotnetProcessRunner runner,
-        ZipPackager zipPackager)
+        ZipPackager zipPackager,
+        MsiPackageBuilder msiBuilder)
     {
         _profileStore = profileStore;
         _commandBuilder = commandBuilder;
         _runner = runner;
         _zipPackager = zipPackager;
+        _msiBuilder = msiBuilder;
     }
 
     /// <summary>只把修改后的配置副本写到默认目录，不执行发布。</summary>
@@ -146,6 +149,43 @@ public sealed class PublishWorkflow
             log?.Report("[打包] 完成：" + zipPath);
         }
 
+        // 安装包失败不回滚已经成功的发布：把原因带回去，由界面提示「发布成功但没生成 MSI」。
+        string? msiPath = null;
+        string? msiError = null;
+        if (request.Msi is { Enabled: true })
+        {
+            var msi = request.Msi;
+            msi.Version = request.Options.VersionOverride ?? request.Project.Version;
+            var msiDirectory = string.IsNullOrWhiteSpace(msi.OutputDirectory)
+                ? PathLayout.GetProjectRoot(ResolveOutputRoot(request.OutputRoot), request.Project.Name)
+                : Path.GetFullPath(msi.OutputDirectory!);
+
+            var productName = string.IsNullOrWhiteSpace(msi.ProductName) ? request.Project.Name : msi.ProductName!.Trim();
+            log?.Report($"[MSI] 正在生成安装包（{productName}，安装到 Program Files）…");
+            try
+            {
+                var built = _msiBuilder.Create(
+                    saved.PublishDirectory, msiDirectory, msi, request.Project.Name, log, cancellationToken);
+                msiPath = built.MsiPath;
+                foreach (var warning in built.Warnings)
+                {
+                    log?.Report("[MSI] " + warning);
+                }
+
+                log?.Report($"[MSI] 完成：{msiPath}（{built.FileCount} 个文件，版本 {built.ProductVersion}）");
+            }
+            catch (PublishException ex)
+            {
+                msiError = ex.Message;
+                log?.Report("[MSI] 生成失败：" + ex.Message);
+            }
+            catch (Exception ex)
+            {
+                msiError = ex.Message;
+                log?.Report("[MSI] 生成失败：" + ex);
+            }
+        }
+
         return new PublishResult
         {
             Success = true,
@@ -153,6 +193,8 @@ public sealed class PublishWorkflow
             PublishDirectory = saved.PublishDirectory,
             ProfilePath = saved.ProfilePath,
             ZipPath = zipPath,
+            MsiPath = msiPath,
+            MsiError = msiError,
             CommandLine = commandLine,
             Duration = stopwatch.Elapsed,
             FileCount = fileCount,

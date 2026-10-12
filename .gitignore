@@ -15,9 +15,13 @@ publish/
 *.userosscache
 *.sln.docstates
 
+## VS 的发布配置（本仓库自身的发布走 tools/make-installer.ps1 与 GitHub Actions，不用它）
+src/DotnetPublishTool.App/Properties/PublishProfiles/
+
 ## 本工具自身产生的临时/验证目录
 .scratch/
 .selftest/
+.msi-verify/
 .smoke-out/
 .artifacts-verify/
 .zip-verify/

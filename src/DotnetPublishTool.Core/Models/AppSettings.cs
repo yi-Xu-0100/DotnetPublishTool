@@ -4,7 +4,7 @@ namespace DotnetPublishTool.Core.Models;
 public sealed class AppSettings
 {
     /// <summary>当前设置结构版本；用于让新增的默认值在老配置上生效。</summary>
-    public const int CurrentSettingsVersion = 3;
+    public const int CurrentSettingsVersion = 4;
 
     /// <summary>设置结构版本；0 表示旧版（无版本号）。</summary>
     public int SettingsVersion { get; set; }
@@ -19,6 +19,22 @@ public sealed class AppSettings
     public string ZipDateFormat { get; set; } = ZipOptions.DefaultDateFormat;
 
     public bool ZipIncludeRootFolder { get; set; }
+
+    /// <summary>发布成功后是否生成 MSI 安装包。</summary>
+    public bool MakeMsiAfterPublish { get; set; }
+
+    /// <summary>MSI 产品名（控制面板与开始菜单里的显示名）；为空时用项目名。</summary>
+    public string? MsiProductName { get; set; }
+
+    /// <summary>MSI 发布者；为空时用产品名。</summary>
+    public string? MsiManufacturer { get; set; }
+
+    /// <summary>MSI 是否创建开始菜单快捷方式。</summary>
+    public bool MsiCreateShortcut { get; set; } = true;
+
+    public ZipNamingMode MsiNamingMode { get; set; } = ZipNamingMode.ProjectNameVersion;
+
+    public string? MsiCustomName { get; set; }
 
     public string? LastProjectPath { get; set; }
 

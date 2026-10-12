@@ -12,7 +12,8 @@ public static class AppServices
         var runner = new DotnetProcessRunner();
         var inspector = new ProjectInspector(runner);
         var profileStore = new PublishProfileStore();
-        var workflow = new PublishWorkflow(profileStore, new PublishCommandBuilder(), runner, new ZipPackager());
+        var workflow = new PublishWorkflow(
+            profileStore, new PublishCommandBuilder(), runner, new ZipPackager(), new MsiPackageBuilder());
 
         var viewModel = new MainViewModel(
             dialogs,

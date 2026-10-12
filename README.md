@@ -16,6 +16,7 @@
 - 「配置预览」实时显示本次将要写出的 `.pubxml` 内容。
 - 发布到默认目录，可选发布前清空发布目录、可选 `--no-restore`。
 - 发布成功后可选生成 zip；命名支持项目名 / 项目名_版本号 / 项目名_日期 / 自定义。
+- 发布成功后可选生成 **MSI 安装包**（装到 `Program Files`、出现在「程序和功能」里、可 `msiexec` 静默安装/卸载）。
 - 运行日志实时显示 dotnet 原始输出，可取消正在进行的发布。
 
 ## 目录约定
@@ -28,6 +29,7 @@
     profiles\<配置名>.pubxml          # 本次生效的配置副本（源文件不动）
     publish\                           # 发布产物
     <项目名>[-_版本号|_日期].zip         # 可选的压缩包
+    <产品名>_<版本号>.msi               # 可选的 MSI 安装包
 ```
 
 例：`C:\Users\<你>\Documents\DotnetPublishTool\SampleConsoleApp\publish`。
@@ -60,6 +62,50 @@
 - 版本号取项目自身的 `Version`；解析不到时用 `unknown`，也可在「版本覆盖」里指定。
 - 压缩包内**默认不包含**顶层文件夹（解压出来就是文件本身）；勾选「压缩包内包含以项目名命名的顶层文件夹」后才会多一层。
 
+## MSI 安装包
+
+勾选「发布成功后生成 MSI 安装包」后，工具会把发布目录打成一个安装包：终端用户双击（或 `msiexec /i`）即可装到 **`%ProgramFiles%\<产品名>`**，并在「程序和功能」里出现卸载项；勾选时会创建开始菜单快捷方式（指向发布产物里的主程序，卸载时一并移除）。
+
+```powershell
+msiexec /i SampleConsoleApp_1.4.2.msi /qn     # 静默安装（需要管理员/UAC：装到 Program Files）
+msiexec /x SampleConsoleApp_1.4.2.msi /qn     # 静默卸载
+msiexec /a SampleConsoleApp_1.4.2.msi /qn TARGETDIR=D:\image\   # 管理安装：铺出网络/组策略部署用的源映像
+```
+
+| 字段 | 说明 |
+| --- | --- |
+| 产品名 | 「程序和功能」、开始菜单与安装目录名；留空用项目名。也是 MSI 的 `ProductName` |
+| 发布者 | MSI 的 `Manufacturer`；留空用产品名 |
+| 命名方式 | 产品名 / 产品名_版本号（默认）/ 自定义，扩展名为 `.msi` |
+| 安装版本 | 取「版本覆盖」或项目版本，按 MSI 规则规整成 `x.y.z`（不合法时用 `1.0.0`） |
+| 创建开始菜单快捷方式 | 关掉则只安装文件 |
+
+**升级**：升级代码由「发布者 + 产品名」稳定推导（也可用 `UpgradeCode` 固定）。只要这两项不变，装新版本时安装包会先卸掉旧版本，不会在「程序和功能」里留下多条。
+
+**实现**：不依赖 WiX，也不联网 —— 直接用系统自带的 `msi.dll` 写 Windows Installer 数据库，用系统自带的 `makecab.exe` 压 CAB（作为内嵌流写进安装包，因此安装包只有一个文件）。
+
+### 本工具自身的安装包
+
+`tools/make-installer.ps1` 会先 `dotnet publish` 发布界面，再用上面同一套能力生成 `DotnetPublishTool_<版本>.msi`（默认输出到 `artifacts/installer`）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\make-installer.ps1                          # 版本取项目评估值（当前 1.0.0）
+powershell -ExecutionPolicy Bypass -File .\tools\make-installer.ps1 -Version 1.1.0 -Manufacturer "某某公司"
+```
+
+**必须在普通（非沙箱）终端运行**：沙箱里 `dotnet publish` 写不了项目的 `obj`，产物还会继承 Low 完整性标签（脚本自带检测，会直接拒绝）。
+
+**版本号就是「能不能升级」**：唯一来源是 [DotnetPublishTool.App.csproj](src/DotnetPublishTool.App/DotnetPublishTool.App.csproj) 里的 `<Version>`（当前 `1.0.0`），CI 与 `tools/make-installer.ps1` 都读它。升级代码由「发布者 + 产品名」稳定推导（要一直保持不变），产品码由「升级代码 + 版本」推导 —— 所以**同版本重装等于修复，换版本才是大版本升级**（先装新、再卸旧）。发新版就改这一处，然后打 `v<版本>` tag；tag 与 `<Version>` 不一致时 CI 会直接失败。
+
+**目标机要求**：框架依赖的产物要求目标机已装 **.NET 10 桌面运行时**（要自带运行时用 `-SelfContained`，体积大，且本机访问不到 NuGet 时会在还原阶段报 `NU1301`）。安装包不做代码签名，SmartScreen 会提示「未知发布者」。
+
+### MSI 的已知限制
+
+- **没有安装向导**：安装包不包含对话框（`InstallUISequence` 里只有 `ExecuteAction`），双击即按默认设置安装到 `Program Files`，不会出现「下一步」。
+- 只做**每机器安装**（`ALLUSERS=1`），需要管理员权限；不支持装到用户目录。
+- 空目录不会被创建（只按文件建目录）。
+- 框架依赖的发布要求目标机器已装对应的 .NET 桌面运行时；要连运行时一起装，用「自包含」发布后再打 MSI。
+
 ## 环境要求
 
 - Windows
@@ -72,11 +118,38 @@ dotnet build DotnetPublishTool.slnx
 dotnet run --project src/DotnetPublishTool.App
 ```
 
-发布本工具自身（顺便当作一次真实验证）：
+## 发布本仓库（把工具打成分发件）
+
+发布 = 用 Release 配置把 WPF 界面打成一个能发给别人的产物。两种口径，**都必须在普通终端（非 DSH 沙箱）里跑**：沙箱内项目 `obj` 是 Medium，写不进去；就算写进去，产物也会继承 Low 完整性标签（见文末排障）。
+
+**① 只发文件夹 / 自己压 zip**（拿到 `artifacts/app` 后自己处理；也可以用本工具对 `src/DotnetPublishTool.App` 打一次包，顺便当一次真实验证）：
 
 ```powershell
 dotnet publish src/DotnetPublishTool.App/DotnetPublishTool.App.csproj -c Release -r win-x64 --self-contained false -o artifacts/app
 ```
+
+**② 发 MSI 安装包**（装到 `Program Files`、出现在「程序和功能」、带开始菜单快捷方式）——见上面的 [本工具自身的安装包](#本工具自身的安装包)，版本号规则与目标机要求也在那一节。
+
+### 用 GitHub Actions 出包（推荐）
+
+推 `v<版本>` tag 就在 CI 上出包并自动建 Release：
+
+```powershell
+# 1) 先改 src/DotnetPublishTool.App/DotnetPublishTool.App.csproj 里的 <Version>
+# 2) 提交后打 tag —— tag 必须与 <Version> 完全一致，否则 CI 直接失败
+git tag v1.0.0
+git push origin main --tags
+```
+
+CI（`.github/workflows/release.yml`，windows-latest + .NET 10 SDK）对两套口径各出一份，文件名带版本与变体：
+
+```text
+DotnetPublishTool_1.0.0_win-x64_framework-dependent.msi / .zip   # 体积小；目标机需 .NET 10 桌面运行时
+DotnetPublishTool_1.0.0_win-x64_self-contained.msi / .zip        # 自带运行时；体积大
+```
+
+- 只想要包、不想建 Release：在 Actions 里手动 `Run workflow`（产物在该次运行的 Artifacts 里，保留 30 天）；勾上 `make_release` 才会建 Release。
+- 手动 / 离线出包仍然用上面的 `tools/make-installer.ps1`。
 
 ## 辅助工具
 
@@ -88,6 +161,12 @@ dotnet run --project tools/DotnetPublishTool.Smoke -- list samples/SampleConsole
 
 # 按配置发布 + 打包
 dotnet run --project tools/DotnetPublishTool.Smoke -- publish samples/SampleConsoleApp/SampleConsoleApp.csproj --out .smoke-out --profile FolderProfile --zip-mode ProjectNameVersion
+
+# 发布并生成 MSI 安装包（产品名/发布者可指定）
+dotnet run --project tools/DotnetPublishTool.Smoke -- publish samples/SampleConsoleApp/SampleConsoleApp.csproj --out .smoke-out --msi --msi-product "示例程序"
+
+# 只把已有的发布目录做成 MSI
+dotnet run --project tools/DotnetPublishTool.Smoke -- pack-msi .smoke-out/SampleConsoleApp/publish --out .smoke-out/SampleConsoleApp
 ```
 
 图形程序本身也带无界面自检（会真实解析 XAML 并跑一次发布）：
@@ -111,6 +190,7 @@ docs/设计说明.md                机制、关键决定与限制
 - 只支持 SDK 风格项目；旧式（非 SDK）`.csproj` 无法用 `dotnet publish`，界面会直接拒绝。
 - 只做文件夹（`PublishProtocol=FileSystem`）发布；Web Deploy / MSDeploy 等需要目标服务器的协议不适用，发布会给出提示。
 - `PublishSingleFile`、自包含（`SelfContained=true`）等需要额外运行时包；本机访问不到 NuGet 时会还原失败，工具会原样显示 dotnet 的错误信息。
+- MSI 生成依赖 Windows 自带的 `msi.dll` 与 `makecab.exe`，只能在 Windows 上跑；安装包不做代码签名，SmartScreen 会提示未知发布者。
 
 ## 排障：写「文档」目录被拒绝
 

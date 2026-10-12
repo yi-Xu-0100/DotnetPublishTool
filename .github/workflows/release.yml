@@ -1,0 +1,145 @@
+name: release
+
+# 出包流程。版本号唯一来源：src/DotnetPublishTool.App/DotnetPublishTool.App.csproj 的 <Version>。
+#   · 推 v<版本> tag  → 出包（框架依赖 + 自包含，各一套 MSI 与 zip）并自动创建 GitHub Release
+#   · 手动 Run workflow → 只出包，产物在本次运行的 Artifacts 里（勾 make_release 才建 Release）
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      make_release:
+        description: '同时创建 GitHub Release（tag 用 v<版本号>）'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+env:
+  DOTNET_NOLOGO: 'true'
+  DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
+
+jobs:
+  prepare:
+    name: 读版本号
+    runs-on: windows-latest
+    outputs:
+      version: ${{ steps.read.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: 从 csproj 读 <Version>
+        id: read
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $json = & dotnet msbuild src/DotnetPublishTool.App/DotnetPublishTool.App.csproj -nologo -getProperty:Version -getProperty:Configuration | Out-String
+          $version = ($json | ConvertFrom-Json).Properties.Version
+          if ([string]::IsNullOrWhiteSpace($version)) { throw '取不到 App 项目的 <Version>，请先在 csproj 里补上。' }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          Write-Host "版本号：$version"
+
+      - name: 校验 tag 与版本号一致
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = '${{ github.ref_name }}'
+          $expected = 'v${{ steps.read.outputs.version }}'
+          if ($tag -ne $expected) {
+            throw "tag $tag 与 csproj 的版本号 $expected 不一致：先把 <Version> 改成 $($tag.TrimStart('v')) 再打 tag。"
+          }
+
+  build:
+    name: 出包（${{ matrix.variant }}）
+    needs: prepare
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: framework-dependent
+            self_contained: false
+          - variant: self-contained
+            self_contained: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: 发布并生成 MSI
+        shell: pwsh
+        run: |
+          $outDir = Join-Path 'artifacts' '${{ matrix.variant }}'
+          $arguments = @(
+            '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', 'tools/make-installer.ps1',
+            '-Version', '${{ needs.prepare.outputs.version }}',
+            '-OutputDirectory', $outDir
+          )
+          if ('${{ matrix.self_contained }}' -eq 'true') { $arguments += '-SelfContained' }
+
+          & powershell @arguments
+          if ($LASTEXITCODE -ne 0) { throw "make-installer.ps1 失败（退出码 $LASTEXITCODE）。" }
+
+      - name: 产出 MSI 与 zip（文件名带版本与变体）
+        id: pack
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $stem = 'DotnetPublishTool_{0}_win-x64_{1}' -f '${{ needs.prepare.outputs.version }}', '${{ matrix.variant }}'
+          $variantDir = Join-Path 'artifacts' '${{ matrix.variant }}'
+
+          $msi = Get-ChildItem $variantDir -Filter '*.msi' | Select-Object -First 1
+          if ($null -eq $msi) { throw '没有生成 MSI。' }
+          Copy-Item $msi.FullName "$stem.msi" -Force
+
+          # 不用 Compress-Archive：它走 PS 5.1 的 Archive 模块，在无控制台的宿主上会因 Write-Progress 报错。
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $publishDir = Join-Path $variantDir 'publish'
+          [System.IO.Compression.ZipFile]::CreateFromDirectory(
+            $publishDir, (Join-Path $PWD "$stem.zip"),
+            [System.IO.Compression.CompressionLevel]::Optimal, $false)
+
+          "stem=$stem" >> $env:GITHUB_OUTPUT
+          Get-ChildItem "$stem.msi", "$stem.zip" | Select-Object Name, Length | Format-Table
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.pack.outputs.stem }}
+          path: |
+            ${{ steps.pack.outputs.stem }}.msi
+            ${{ steps.pack.outputs.stem }}.zip
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: 建 Release
+    needs: [prepare, build]
+    if: github.ref_type == 'tag' || inputs.make_release
+    runs-on: windows-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: gh release create
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = '${{ needs.prepare.outputs.version }}'
+          $tag = "v$version"
+          Get-ChildItem dist | Select-Object Name, Length | Format-Table
+
+          gh release create $tag dist/* -R '${{ github.repository }}' --title "DotnetPublishTool $version" --generate-notes
+          if ($LASTEXITCODE -ne 0) { throw "创建 Release 失败（退出码 $LASTEXITCODE）。" }

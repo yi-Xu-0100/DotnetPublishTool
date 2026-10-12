@@ -54,4 +54,7 @@ public sealed class PublishRequest
 
     /// <summary>压缩包设置；为 null 或 Enabled=false 时不打包。</summary>
     public ZipOptions? Zip { get; init; }
+
+    /// <summary>MSI 安装包设置；为 null 或 Enabled=false 时不生成。</summary>
+    public MsiOptions? Msi { get; init; }
 }
