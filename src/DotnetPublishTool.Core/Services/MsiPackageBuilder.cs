@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Diagnostics;
 using System.Text;
 using DotnetPublishTool.Core.Models;
 
@@ -44,11 +45,65 @@ public sealed class MsiPackageBuilder
     private const string InstallFolderInProgramFiles32 = "ProgramFilesFolder";
     private const string UpgradeFoundProperty = "UPGRADEFOUND";
 
+    private const string NewerVersionFoundProperty = "NEWERVERSIONDETECTED";
+
     private const int ComponentAttribute64Bit = 256;
     private const int FileAttributeVital = 512;
 
-    /// <summary>Upgrade 表 Attributes：版本下限、上限都含端点。</summary>
-    private const int UpgradeAttributes = 1 | 2;
+    /// <summary>
+    /// Upgrade 表 Attributes 的位（来自 msi.h）：
+    ///   0x0001 MigrateFeatures、0x0002 OnlyDetect（只检测、**不卸载**）、0x0004 IgnoreRemoveFailure、
+    ///   0x0100 VersionMinInclusive、0x0200 VersionMaxInclusive、0x0400 LanguagesExclusive。
+    /// 这里曾经错写成 1 | 2，等于给「要卸载旧版」的那一行加了 OnlyDetect —— 于是 FindRelatedProducts 能检测到
+    /// （UPGRADEFOUND 有值），RemoveExistingProducts 却什么都不做（2 毫秒空转）。2026-10-13 拿本机真实产品的
+    /// Upgrade 表对照（它们用 256 / 258）才定位到。
+    /// </summary>
+    private const int UpgradeAttributes = 0x0100;
+
+    /// <summary>只检测、不卸载：用于「已经装了更新的版本」那条防降级记录。</summary>
+    private const int UpgradeAttributesOnlyDetect = 0x0002;
+
+    /// <summary>
+    /// 卸载旧版本那一行的 Attributes。诊断用环境变量 <c>DOTNETPUBLISHTOOL_UPGRADE_ATTRIBUTES</c> 可以覆盖它 ——
+    /// <c>tools/verify-msi-upgrade.ps1 -ProbeVariants</c> 正是靠它重打变体包，复现「带 OnlyDetect(0x2) 就只检测不卸载」。
+    /// 正常打包不要设置这个变量。
+    /// </summary>
+    private static int ResolveUpgradeAttributes()
+    {
+        var raw = Environment.GetEnvironmentVariable("DOTNETPUBLISHTOOL_UPGRADE_ATTRIBUTES");
+        if (!string.IsNullOrWhiteSpace(raw) && int.TryParse(raw, out var value) && value > 0)
+        {
+            return value;
+        }
+
+        return UpgradeAttributes;
+    }
+
+    /// <summary>
+    /// Error 表内容：安装/卸载/升级常见失败码的中文说明。
+    /// 系统里没有可直接提取的「标准 Error 表」（msimsg.dll 只有 1603 这类少量文案，1101/1925 的正确文案不在里面），
+    /// 所以这里是我们自己的措辞：不带 [n] 占位符，避免被 MSI 替换成空；数字编号仍由 MSI 自己打印。
+    /// </summary>
+    private static readonly (int Id, string Message)[] StandardErrors =
+    [
+        (16, "无法删除目录：目录可能正在被使用。"),
+        (1101, "无法打开注册表项：可能没有权限（试试以管理员身份运行安装程序）。"),
+        (1303, "无法创建或写入文件：请以管理员身份运行，或先关闭正在使用该文件的程序。"),
+        (1304, "同名文件已存在且无法覆盖：请先卸载旧版本再安装。"),
+        (1305, "读取安装包里的文件时出错：安装包可能不完整，请重新下载。"),
+        (1316, "写入文件失败：目标文件可能被占用，请先关闭正在运行的程序。"),
+        (1603, "安装时发生严重错误。常见原因：没有管理员权限、目标程序正在运行、找不到安装包。用 msiexec /l*v 生成详细日志可看到具体原因。"),
+        (1619, "无法打开安装包：文件可能损坏或不完整，请重新下载。"),
+        (1620, "安装包无效：请确认下载完整。"),
+        (1633, "当前系统不支持这个安装包（可能是 32/64 位不匹配）。"),
+        (1638, "本产品的另一个版本已经安装：请先在「程序和功能」里卸载它，再安装这个版本。"),
+        (1641, "安装已开始，需要重启计算机才能全部生效。"),
+        (1701, "无法创建快捷方式：目标文件夹不可写（试试以管理员身份运行安装程序）。"),
+        (1925, "需要管理员权限才能为所有用户安装：请右键「以管理员身份运行」，或改用每用户安装。"),
+        (1926, "没有写入权限：请以管理员身份运行安装程序。"),
+        (2205, "安装包数据库里缺少表（打包时有东西没写全）。"),
+        (2228, "安装包数据库里缺少列（打包时有东西没写全）。"),
+    ];
 
     // 列定义抄自 Windows Installer 的官方 schema（对齐 WiX 产出的包）：
     //   - 用户可见文本列要标 LOCALIZABLE，否则引擎读这些列时会报错；
@@ -63,6 +118,10 @@ public sealed class MsiPackageBuilder
         "CREATE TABLE `FeatureComponents` (`Feature_` CHAR(38) NOT NULL, `Component_` CHAR(72) NOT NULL PRIMARY KEY `Feature_`, `Component_`)",
         "CREATE TABLE `Media` (`DiskId` SHORT NOT NULL, `LastSequence` LONG NOT NULL, `DiskPrompt` CHAR(64) LOCALIZABLE, `Cabinet` CHAR(255), `VolumeLabel` CHAR(32), `Source` CHAR(72) PRIMARY KEY `DiskId`)",
         "CREATE TABLE `Upgrade` (`UpgradeCode` CHAR(38) NOT NULL, `VersionMin` CHAR(20), `VersionMax` CHAR(20), `Language` CHAR(255), `Attributes` LONG NOT NULL, `Remove` CHAR(255), `ActionProperty` CHAR(72) NOT NULL PRIMARY KEY `UpgradeCode`, `VersionMin`, `VersionMax`, `Language`, `Attributes`)",
+        "CREATE TABLE `LaunchCondition` (`Condition` CHAR(255) NOT NULL, `Description` CHAR(255) NOT NULL LOCALIZABLE PRIMARY KEY `Condition`)",
+        // Error 表：安装/卸载/升级失败时，MSI 从这张表取文案写进日志与弹窗。
+        // 少了它，失败在日志里只剩「SELECT Message FROM Error WHERE Error = 22」这类查表失败，看不到原因。
+        "CREATE TABLE `Error` (`Error` LONG NOT NULL, `Message` CHAR(0) NOT NULL LOCALIZABLE PRIMARY KEY `Error`)",
         "CREATE TABLE `Shortcut` (`Shortcut` CHAR(72) NOT NULL, `Directory_` CHAR(72) NOT NULL, `Name` CHAR(128) NOT NULL LOCALIZABLE, `Component_` CHAR(72) NOT NULL, `Target` CHAR(72) NOT NULL, `Arguments` CHAR(255), `Description` CHAR(255) LOCALIZABLE, `Hotkey` SHORT, `Icon_` CHAR(72), `IconIndex` SHORT, `ShowCmd` SHORT, `WkDir` CHAR(72) PRIMARY KEY `Shortcut`)",
         "CREATE TABLE `InstallExecuteSequence` (`Action` CHAR(72) NOT NULL, `Condition` CHAR(255), `Sequence` SHORT PRIMARY KEY `Action`)",
         "CREATE TABLE `InstallUISequence` (`Action` CHAR(72) NOT NULL, `Condition` CHAR(255), `Sequence` SHORT PRIMARY KEY `Action`)",
@@ -79,7 +138,8 @@ public sealed class MsiPackageBuilder
     /// </summary>
     private static readonly (string Action, string? Condition, int Sequence)[] ExecuteSequence =
     [
-        ("FindRelatedProducts", null, 100),
+        ("FindRelatedProducts", null, 25),
+        ("LaunchConditions", null, 100),
         ("ValidateProductID", null, 700),
         ("CostInitialize", null, 800),
         ("FileCost", null, 900),
@@ -283,10 +343,118 @@ public sealed class MsiPackageBuilder
                 fileKey,
                 fileName,
                 directories.Resolve(Path.GetDirectoryName(relative) ?? string.Empty),
-                new FileInfo(source).Length));
+                new FileInfo(source).Length,
+                ReadFileVersion(source)));
         }
 
         return payload;
+    }
+
+    /// <summary>
+    /// 读文件自身的版本号，四段写进 File 表的 Version 列。
+    /// 这一列不能空：Windows Installer 判断「要不要覆盖已存在的同名文件」时只看 File 表的 Version ——
+    /// 空了就当成「无版本文件」，改用文件日期判断，目标文件的日期更新时**不会覆盖**，
+    /// 表现就是「装了新版本但程序还是旧的」。
+    /// 没有版本资源的文件（json 等）返回 null，仍按日期规则走。
+    /// </summary>
+    private static string? ReadFileVersion(string path)
+    {
+        try
+        {
+            var info = FileVersionInfo.GetVersionInfo(path);
+            if (string.IsNullOrWhiteSpace(info.FileVersion))
+            {
+                return null;
+            }
+
+            var parts = new[] { info.FileMajorPart, info.FileMinorPart, info.FileBuildPart, info.FilePrivatePart };
+            return parts.All(part => part == 0) ? null : string.Join('.', parts);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// 打完自检：下面每一条都对应一次真实踩坑（2026-10-12 / 10-13），错一条就会产出「装得上、升级却不生效」的包，
+    /// 所以宁可当场报错，也不要把这种包发出去：
+    ///   · 卸旧版那一行带 OnlyDetect(0x2) → 引擎只检测不卸载，旧记录与旧文件都留着；
+    ///   · File 表 Version 没写 → 当成无版本文件按日期比较，新版本的文件装不上；
+    ///   · 少了 Error / LaunchCondition 表 → 失败只有错误码没文案、防降级提示失声。
+    /// 诊断开关 DOTNETPUBLISHTOOL_UPGRADE_ATTRIBUTES 生效时，OnlyDetect 那条降级成警告（验证脚本要用它造变体包）。
+    /// </summary>
+    private static void ValidatePackage(MsiDatabase database, PackageSpec spec, IProgress<string>? log)
+    {
+        var problems = new List<string>();
+        var diagnosticOverride = !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("DOTNETPUBLISHTOOL_UPGRADE_ATTRIBUTES"));
+
+        var upgradeRows = database.Query("SELECT `ActionProperty`,`Attributes` FROM `Upgrade`");
+        var removalRows = upgradeRows.Where(row => row.Length > 1 && row[0] == UpgradeFoundProperty).ToList();
+        if (removalRows.Count == 0)
+        {
+            problems.Add("Upgrade 表缺少卸载旧版本那一行（ActionProperty=" + UpgradeFoundProperty + "）");
+        }
+
+        foreach (var row in removalRows)
+        {
+            int.TryParse(row[1], out var attributes);
+            if ((attributes & UpgradeAttributesOnlyDetect) == 0)
+            {
+                continue;
+            }
+
+            var message = "卸载旧版本那一行的 Attributes 带了 OnlyDetect(0x2)（值 " + row[1] + "）：引擎只会检测、不会卸载旧版本";
+            if (diagnosticOverride)
+            {
+                log?.Report("[MSI][诊断] " + message + "。诊断开关已开启，仅警告。");
+            }
+            else
+            {
+                problems.Add(message);
+            }
+        }
+
+        if (!upgradeRows.Any(row => row.Length > 0 && row[0] == NewerVersionFoundProperty))
+        {
+            problems.Add("Upgrade 表缺少防降级那一行（ActionProperty=" + NewerVersionFoundProperty + "）");
+        }
+
+        var writtenVersions = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var row in database.Query("SELECT `File`,`Version` FROM `File`"))
+        {
+            if (row.Length > 1)
+            {
+                writtenVersions[row[0]] = row[1];
+            }
+        }
+
+        foreach (var file in spec.Files.Where(file => !string.IsNullOrEmpty(file.Version)))
+        {
+            writtenVersions.TryGetValue(file.FileKey, out var written);
+            if (!string.Equals(written, file.Version, StringComparison.Ordinal))
+            {
+                problems.Add("File 表的 Version 没写对：" + file.FileName + " 应为 " + file.Version + "，实际是 " + (written ?? "(空)"));
+                break;
+            }
+        }
+
+        if (database.Query("SELECT `Error` FROM `Error`").Count == 0)
+        {
+            problems.Add("Error 表是空的：安装失败时日志里只有错误码、没有文案");
+        }
+
+        if (database.Query("SELECT `Condition` FROM `LaunchCondition`").Count == 0)
+        {
+            problems.Add("LaunchCondition 表是空的：装了更新版本时不会有任何提示");
+        }
+
+        if (problems.Count > 0)
+        {
+            throw new PublishException(
+                "生成的 MSI 自检没通过（这些问题会让「升级」看起来装成功、实际没生效）："
+                + Environment.NewLine + "- " + string.Join(Environment.NewLine + "- ", problems));
+        }
     }
 
     /// <summary>File 键要唯一、ASCII 且可读；同名文件靠序号前缀区分。</summary>
@@ -388,6 +556,11 @@ public sealed class MsiPackageBuilder
             "INSERT INTO `Feature` (`Feature`,`Feature_Parent`,`Title`,`Description`,`Display`,`Level`,`Directory_`,`Attributes`) VALUES (?,?,?,?,?,?,?,?)",
             FeatureKey, null, spec.ProductName, spec.ProductName, 1, 1, InstallFolderKey, 0);
 
+        foreach (var (errorId, message) in StandardErrors)
+        {
+            database.Insert("INSERT INTO `Error` (`Error`,`Message`) VALUES (?,?)", errorId, message);
+        }
+
         var sequence = 0;
         foreach (var file in spec.Files)
         {
@@ -399,7 +572,7 @@ public sealed class MsiPackageBuilder
                 componentKey, componentId, file.DirectoryKey, spec.Is64Bit ? ComponentAttribute64Bit : 0, null, file.FileKey);
             database.Insert(
                 "INSERT INTO `File` (`File`,`Component_`,`FileName`,`FileSize`,`Version`,`Language`,`Attributes`,`Sequence`) VALUES (?,?,?,?,?,?,?,?)",
-                file.FileKey, componentKey, file.FileName, file.Size > int.MaxValue ? int.MaxValue : (int)file.Size, null, null, FileAttributeVital, sequence);
+                file.FileKey, componentKey, file.FileName, file.Size > int.MaxValue ? int.MaxValue : (int)file.Size, file.Version, null, FileAttributeVital, sequence);
             database.Insert(
                 "INSERT INTO `FeatureComponents` (`Feature_`,`Component_`) VALUES (?,?)",
                 FeatureKey, componentKey);
@@ -409,10 +582,21 @@ public sealed class MsiPackageBuilder
             "INSERT INTO `Media` (`DiskId`,`LastSequence`,`DiskPrompt`,`Cabinet`,`VolumeLabel`,`Source`) VALUES (?,?,?,?,?,?)",
             1, sequence, null, "#" + CabinetStreamName, null, null);
 
-        // 同一升级代码 + 版本不高于本次版本 → 先按大版本升级卸掉旧版本。
+        // 1) 卸载旧版本：范围 [0.0.0, 本版本)（上限不含，正好不会匹配到自己）。
+        //    Attributes 必须是 VersionMinInclusive，**不能带 OnlyDetect**，否则只检测不卸载。
         database.Insert(
             "INSERT INTO `Upgrade` (`UpgradeCode`,`VersionMin`,`VersionMax`,`Language`,`Attributes`,`Remove`,`ActionProperty`) VALUES (?,?,?,?,?,?,?)",
-            spec.UpgradeCode, "0.0.0", spec.ProductVersion, null, UpgradeAttributes, null, UpgradeFoundProperty);
+            spec.UpgradeCode, "0.0.0", spec.ProductVersion, null, ResolveUpgradeAttributes(), null, UpgradeFoundProperty);
+
+        // 2) 防降级：装了比本包更新的版本时给明确提示，而不是静默走维护模式什么都不做（OnlyDetect 只检测）。
+        database.Insert(
+            "INSERT INTO `Upgrade` (`UpgradeCode`,`VersionMin`,`VersionMax`,`Language`,`Attributes`,`Remove`,`ActionProperty`) VALUES (?,?,?,?,?,?,?)",
+            spec.UpgradeCode, spec.ProductVersion, null, null, UpgradeAttributes | UpgradeAttributesOnlyDetect, null, NewerVersionFoundProperty);
+
+        database.Insert(
+            "INSERT INTO `LaunchCondition` (`Condition`,`Description`) VALUES (?,?)",
+            "NOT " + NewerVersionFoundProperty,
+            "系统里已经装了更新版本的 " + spec.ProductName + "。请先在「程序和功能」里卸载它，再安装这个版本。");
 
         if (withShortcut)
         {
@@ -453,6 +637,8 @@ public sealed class MsiPackageBuilder
         database.InsertStream(CabinetStreamName, spec.CabinetPath);
         database.WriteSummaryInformation(
             spec.ProductName, spec.Manufacturer, spec.Is64Bit ? "x64;1033" : "Intel;1033", spec.PackageCode);
+        ValidatePackage(database, spec, null);
+
         database.Commit();
     }
 
@@ -479,7 +665,13 @@ public sealed class MsiPackageBuilder
 
     private sealed record DirectoryRow(string Key, string ParentKey, string DefaultDir);
 
-    private sealed record PayloadFile(string RelativePath, string FileKey, string FileName, string DirectoryKey, long Size);
+    private sealed record PayloadFile(
+        string RelativePath,
+        string FileKey,
+        string FileName,
+        string DirectoryKey,
+        long Size,
+        string? Version);
 
     private sealed class PackageSpec
     {

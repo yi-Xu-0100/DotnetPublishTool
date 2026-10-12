@@ -52,6 +52,21 @@ internal static class MsiNative
     [DllImport("msi.dll", ExactSpelling = true)]
     internal static extern uint MsiViewExecute(IntPtr view, IntPtr record);
 
+    /// <summary>取不到下一行时的返回码（读表循环靠它结束）。</summary>
+    internal const uint ErrorNoMoreItems = 259;
+
+    /// <summary>字符串缓冲区不够大时的返回码（先问长度用）。</summary>
+    internal const uint ErrorMoreData = 234;
+
+    [DllImport("msi.dll", ExactSpelling = true)]
+    internal static extern uint MsiViewFetch(IntPtr view, out IntPtr record);
+
+    [DllImport("msi.dll", ExactSpelling = true)]
+    internal static extern uint MsiRecordGetFieldCount(IntPtr record);
+
+    [DllImport("msi.dll", EntryPoint = "MsiRecordGetStringW", CharSet = CharSet.Unicode, ExactSpelling = true)]
+    internal static extern uint RecordGetString(IntPtr record, uint field, System.Text.StringBuilder value, ref uint size);
+
     /// <summary>注意：MsiCreateRecord 直接返回记录句柄（失败时为 0），不是错误码 + out 参数。</summary>
     [DllImport("msi.dll", ExactSpelling = true)]
     internal static extern IntPtr MsiCreateRecord(uint fieldCount);

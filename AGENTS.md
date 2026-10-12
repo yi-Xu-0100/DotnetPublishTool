@@ -41,6 +41,8 @@ dotnet run --project tools/DotnetPublishTool.Smoke -- publish samples/SampleCons
 <App 的 exe> --selftest --render .ui.png --project samples/SampleConsoleApp/SampleConsoleApp.csproj --out .render-out
 ```
 
+**MSI 升级行为要在管理员终端验**：`tools/verify-msi-upgrade.ps1`（现场打两个版本的包、临时产品名 + 临时目录，断言旧版被卸掉、新版文件被换；沙箱 / 非提权会话直接拒绝）。排查「升级没卸旧版」时加 `-ProbeVariants` 跑变体矩阵（改 Remove / REP 位置 / Attributes，逐种试）。
+
 ## 本机环境注意事项
 
 - **解决方案级构建需要 `-m:1`**。在受限 shell / DSH 沙箱里，MSBuild 多节点并行通信会被拦，`dotnet build DotnetPublishTool.slnx` 会以「0 错误但生成失败」的形态失败；加 `-m:1` 即可（普通终端无此问题）。单项目构建不受影响。

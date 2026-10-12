@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Text;
 using DotnetPublishTool.Core.Models;
 
 namespace DotnetPublishTool.Core.Services;
@@ -91,6 +92,63 @@ internal sealed class MsiDatabase : IDisposable
 
             MsiNative.MsiCloseHandle(view);
         }
+    }
+
+    /// <summary>读表（打完包自检用）：返回每一行的字段值（一律按字符串取，NULL 得空串）。</summary>
+    public IReadOnlyList<string[]> Query(string sql)
+    {
+        var rows = new List<string[]>();
+        var view = OpenView(sql);
+        try
+        {
+            Check(MsiNative.MsiViewExecute(view, IntPtr.Zero), sql);
+            while (true)
+            {
+                var status = MsiNative.MsiViewFetch(view, out var record);
+                if (status == MsiNative.ErrorNoMoreItems)
+                {
+                    break;
+                }
+
+                Check(status, sql);
+                try
+                {
+                    var count = (int)MsiNative.MsiRecordGetFieldCount(record);
+                    var values = new string[count];
+                    for (var index = 0; index < count; index++)
+                    {
+                        values[index] = ReadString(record, (uint)(index + 1));
+                    }
+
+                    rows.Add(values);
+                }
+                finally
+                {
+                    MsiNative.MsiCloseHandle(record);
+                }
+            }
+        }
+        finally
+        {
+            MsiNative.MsiCloseHandle(view);
+        }
+
+        return rows;
+    }
+
+    private static string ReadString(IntPtr record, uint field)
+    {
+        var buffer = new StringBuilder(256);
+        var size = (uint)buffer.Capacity;
+        var status = MsiNative.RecordGetString(record, field, buffer, ref size);
+        if (status == MsiNative.ErrorMoreData)
+        {
+            buffer = new StringBuilder((int)size + 1);
+            size = (uint)buffer.Capacity;
+            MsiNative.RecordGetString(record, field, buffer, ref size);
+        }
+
+        return buffer.ToString();
     }
 
     /// <summary>把 cab 作为流写进 _Streams，Media 表里用 #流名 引用它，安装包因此只有一个文件。</summary>
