@@ -12,7 +12,7 @@
 
     <!-- 版本号的唯一来源：CI 出包（.github/workflows/release.yml）和 tools/make-installer.ps1 都读它。
          发新版就改这里，然后打 v<版本> tag；tag 与它不一致时 CI 会直接失败。 -->
-    <Version>1.1.0</Version>
+    <Version>1.1.1</Version>
   </PropertyGroup>
 
   <ItemGroup>
