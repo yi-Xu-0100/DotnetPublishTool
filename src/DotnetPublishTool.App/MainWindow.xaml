@@ -138,6 +138,11 @@
             <TextBox Grid.Column="1" Text="{Binding MsiManufacturer, UpdateSourceTrigger=PropertyChanged}"
                      ToolTip="安装包「发布者」；留空用产品名" />
           </Grid>
+          <CheckBox Content="打包时自动递增版本" IsChecked="{Binding MsiAutoBumpVersion}" Margin="0,8,0,0"
+                    ToolTip="每次生成 MSI 前把版本递增一位（1.4.2 → 1.4.3），让新安装包能升级旧版本" />
+          <CheckBox Content="并把新版本写回项目 csproj" IsChecked="{Binding MsiWriteVersionBack}"
+                    IsEnabled="{Binding MsiAutoBumpVersion}" Margin="0,2,0,0"
+                    ToolTip="本工具唯一会改动源文件的选项：写前把原 csproj 备份到输出目录的 csproj-backup；关掉则新版本只作用于本次打包" />
           <Grid Margin="0,6,0,0">
             <Grid.ColumnDefinitions>
               <ColumnDefinition Width="Auto" />
@@ -158,6 +163,8 @@
           </Grid>
           <CheckBox Content="创建开始菜单快捷方式" IsChecked="{Binding MsiCreateShortcut}" Margin="0,8,0,0"
                     ToolTip="快捷方式指向发布产物里的主程序，卸载时一并移除" />
+          <TextBlock Text="{Binding MsiVersionPreview}" TextWrapping="Wrap"
+                     Foreground="{StaticResource TextSecondary}" Margin="0,6,0,0" />
           <TextBlock Text="{Binding MsiPathPreview, StringFormat=安装包：{0}}" TextWrapping="Wrap"
                      Foreground="{StaticResource TextSecondary}" Margin="0,6,0,0"
                      ToolTip="安装版本按 MSI 规则规整为 x.y.z（不合法时用 1.0.0）" />

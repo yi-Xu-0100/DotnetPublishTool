@@ -15,19 +15,22 @@ public sealed class PublishWorkflow
     private readonly DotnetProcessRunner _runner;
     private readonly ZipPackager _zipPackager;
     private readonly MsiPackageBuilder _msiBuilder;
+    private readonly MsiVersionService _versionService;
 
     public PublishWorkflow(
         PublishProfileStore profileStore,
         PublishCommandBuilder commandBuilder,
         DotnetProcessRunner runner,
         ZipPackager zipPackager,
-        MsiPackageBuilder msiBuilder)
+        MsiPackageBuilder msiBuilder,
+        MsiVersionService versionService)
     {
         _profileStore = profileStore;
         _commandBuilder = commandBuilder;
         _runner = runner;
         _zipPackager = zipPackager;
         _msiBuilder = msiBuilder;
+        _versionService = versionService;
     }
 
     /// <summary>只把修改后的配置副本写到默认目录，不执行发布。</summary>
@@ -36,6 +39,9 @@ public sealed class PublishWorkflow
         var outputRoot = ResolveOutputRoot(request.OutputRoot);
         var publishDirectory = PathLayout.GetPublishDirectory(outputRoot, request.Project.Name);
         var profileDirectory = PathLayout.GetProfileDirectory(outputRoot, request.Project.Name);
+
+        // 自动递增要在写配置副本之前解析：新版本会一路带到产物、zip 与安装包上。
+        ApplyAutoVersionBump(request);
         var properties = BuildEffectiveProperties(request, publishDirectory);
 
         string profilePath;
@@ -53,6 +59,32 @@ public sealed class PublishWorkflow
         }
 
         return new SavedProfile(profilePath, publishDirectory);
+    }
+
+    /// <summary>
+    /// 「打包 MSI 时自动递增版本」：把本次要用的版本换成递增后的版本。
+    /// 这里只改本次请求（配置副本、产物、zip、MSI 都用新版本），写回源项目由发布成功后按选项再做。
+    /// </summary>
+    private void ApplyAutoVersionBump(PublishRequest request)
+    {
+        if (request.Msi is not { Enabled: true, AutoBumpVersion: true } msi)
+        {
+            return;
+        }
+
+        // 基准优先级：MSI 显式指定的安装版本 → 界面/命令行的版本覆盖 → 项目评估出的版本。
+        var effectiveVersion = msi.ProductVersion ?? request.Options.VersionOverride ?? request.Project.Version;
+        var plan = _versionService.Resolve(msi, request.Project.Path, effectiveVersion);
+        if (plan is null)
+        {
+            return;
+        }
+
+        // 一次发布只用一个版本号：产物、zip 名、安装包、写回项目的都是它。
+        msi.BaseVersion = plan.Value.BaseVersion;
+        msi.ProductVersion = plan.Value.NextVersion;
+        msi.Version = plan.Value.NextVersion;
+        request.Options.VersionOverride = plan.Value.NextVersion;
     }
 
     public async Task<PublishResult> RunAsync(
@@ -186,6 +218,29 @@ public sealed class PublishWorkflow
             }
         }
 
+        // 安装包真的产出了才推进版本：MSI 失败时版本不变，重跑还是同一个版本，不会白吃掉一个号。
+        string? bumpedVersion = null;
+        string? versionError = null;
+        if (msiPath is not null && request.Msi is { Enabled: true, AutoBumpVersion: true } msiPlan
+            && !string.IsNullOrWhiteSpace(msiPlan.Version))
+        {
+            bumpedVersion = msiPlan.Version;
+            log?.Report($"[版本] 自动递增：{msiPlan.BaseVersion ?? "（未知）"} → {bumpedVersion}");
+            try
+            {
+                var backupDirectory = Path.Combine(
+                    PathLayout.GetProjectRoot(ResolveOutputRoot(request.OutputRoot), request.Project.Name),
+                    "csproj-backup");
+                _versionService.Apply(
+                    request.Project.Path, bumpedVersion!, msiPlan.BaseVersion, msiPlan.WriteVersionBack, backupDirectory, log);
+            }
+            catch (Exception ex)
+            {
+                versionError = ex.Message;
+                log?.Report("[版本] 写回/记录失败：" + ex.Message);
+            }
+        }
+
         return new PublishResult
         {
             Success = true,
@@ -195,6 +250,8 @@ public sealed class PublishWorkflow
             ZipPath = zipPath,
             MsiPath = msiPath,
             MsiError = msiError,
+            BumpedVersion = bumpedVersion,
+            VersionError = versionError,
             CommandLine = commandLine,
             Duration = stopwatch.Elapsed,
             FileCount = fileCount,

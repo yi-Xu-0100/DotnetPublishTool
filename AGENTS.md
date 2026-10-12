@@ -21,6 +21,7 @@ WPF 图形化的 dotnet 发布/打包工具：选项目 → 找发布配置 → 
 - 项目探查与类型识别：`src/DotnetPublishTool.Core/Services/ProjectInspector.cs`
 - 命令行构造：`src/DotnetPublishTool.Core/Services/PublishCommandBuilder.cs`
 - MSI 安装包：`src/DotnetPublishTool.Core/Services/MsiPackageBuilder.cs`（配合 MsiDatabase / MsiNative / CabinetBuilder）
+- MSI 版本自动递增 / 写回项目：`src/DotnetPublishTool.Core/Services/MsiVersionService.cs`、`CsprojVersionEditor.cs`（唯一会改源文件的功能，默认关闭）
 - 本工具自身的安装包：`tools/make-installer.ps1`（**必须在普通终端跑**，自带沙箱检测）
 - 界面：`src/DotnetPublishTool.App/MainWindow.xaml`、`src/DotnetPublishTool.App/ViewModels/MainViewModel.cs`
 - 端到端验证：`tools/DotnetPublishTool.Smoke`、`src/DotnetPublishTool.App/SelfTest.cs`
@@ -44,6 +45,7 @@ dotnet run --project tools/DotnetPublishTool.Smoke -- publish samples/SampleCons
 
 - **解决方案级构建需要 `-m:1`**。在受限 shell / DSH 沙箱里，MSBuild 多节点并行通信会被拦，`dotnet build DotnetPublishTool.slnx` 会以「0 错误但生成失败」的形态失败；加 `-m:1` 即可（普通终端无此问题）。单项目构建不受影响。
 - **本机访问 nuget.org 不可达**。需要新 NuGet 包的发布（`PublishSingleFile`、自包含等）会报 `NU1301`；普通的框架依赖发布不受影响。
+- **新建 `.cs` / `.xaml` 后要确认是 CRLF**：`.gitattributes` 把这些类型声明为 `text eol=crlf`，而写文件的工具默认输出 LF —— 直接 `git add` 会报 `fatal: LF would be replaced by CRLF`，而且**整条 `git add` 会一个文件都不入暂存区**。`.md` 是 `eol=lf`，保持 LF。
 - **本仓库的 `.ps1` 是 UTF-8 with BOM**：Windows PowerShell 5.1 读无 BOM 的 `.ps1` 会按 ANSI 解码，脚本里的中文会变乱码并报语法错误。编辑工具可能吃掉 BOM —— 改完 `tools/*.ps1` 后确认头三字节是 `EF BB BF`，换行保持 CRLF（`.gitattributes` 已声明 `*.ps1 text eol=crlf`）。
 - **完整性标签（Mandatory Label / Low）**：机制、定性方法与"沙箱自测必须用独立目录"的通用规则见全局 `~/.dsh/AGENTS.md`，这里只记本仓库特有的事。
   - 修复脚本：`tools/fix-build-integrity.ps1`（**必须在普通终端跑**；脚本自带沙箱检测，会拒绝在沙箱内执行）。

@@ -22,6 +22,12 @@ public sealed class PublishResult
     /// <summary>MSI 生成失败的原因。发布本身已成功时，这里才有值。</summary>
     public string? MsiError { get; init; }
 
+    /// <summary>自动递增后的版本（本次发布实际使用的版本号；未启用自动递增时为 null）。</summary>
+    public string? BumpedVersion { get; init; }
+
+    /// <summary>把新版本写回项目 / 记录版本时失败的原因。</summary>
+    public string? VersionError { get; init; }
+
     public string CommandLine { get; init; } = string.Empty;
 
     public TimeSpan Duration { get; init; }

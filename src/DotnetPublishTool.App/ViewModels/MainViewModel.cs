@@ -24,6 +24,7 @@ public sealed class MainViewModel : ObservableObject
     private readonly ProjectInspector _inspector;
     private readonly PublishProfileStore _profileStore;
     private readonly PublishWorkflow _workflow;
+    private readonly MsiVersionService _versionService;
     private readonly StringBuilder _logBuilder = new();
     private readonly object _logLock = new();
 
@@ -63,6 +64,8 @@ public sealed class MainViewModel : ObservableObject
     private bool _msiCreateShortcut = true;
     private ZipNamingMode _msiNamingMode = ZipNamingMode.ProjectNameVersion;
     private string _msiCustomName = string.Empty;
+    private bool _msiAutoBumpVersion;
+    private bool _msiWriteVersionBack = true;
 
     private string _profilePreviewXml = string.Empty;
     private string _logText = string.Empty;
@@ -74,13 +77,15 @@ public sealed class MainViewModel : ObservableObject
         AppSettingsService settingsService,
         ProjectInspector inspector,
         PublishProfileStore profileStore,
-        PublishWorkflow workflow)
+        PublishWorkflow workflow,
+        MsiVersionService versionService)
     {
         _dialogs = dialogs;
         _settingsService = settingsService;
         _inspector = inspector;
         _profileStore = profileStore;
         _workflow = workflow;
+        _versionService = versionService;
 
         BrowseProjectCommand = new AsyncRelayCommand(BrowseProjectAsync, () => !IsBusy);
         RescanCommand = new AsyncRelayCommand(RescanAsync, () => !IsBusy && !string.IsNullOrWhiteSpace(ProjectPath));
@@ -172,6 +177,7 @@ public sealed class MainViewModel : ObservableObject
             OnPropertyChanged(nameof(PublishDirectoryPreview));
             OnPropertyChanged(nameof(ZipPathPreview));
             OnPropertyChanged(nameof(MsiPathPreview));
+            OnPropertyChanged(nameof(MsiVersionPreview));
 
             TargetFrameworks.Clear();
             if (value is not null)
@@ -489,6 +495,32 @@ public sealed class MainViewModel : ObservableObject
 
     public bool IsMsiCustomNaming => MsiNamingMode == ZipNamingMode.Custom;
 
+    /// <summary>打包 MSI 时自动把版本递增一位。</summary>
+    public bool MsiAutoBumpVersion
+    {
+        get => _msiAutoBumpVersion;
+        set
+        {
+            if (SetProperty(ref _msiAutoBumpVersion, value))
+            {
+                RebuildPreview();
+            }
+        }
+    }
+
+    /// <summary>自动递增后把新版本写回项目 csproj（本工具唯一会改动源文件的选项）。</summary>
+    public bool MsiWriteVersionBack
+    {
+        get => _msiWriteVersionBack;
+        set
+        {
+            if (SetProperty(ref _msiWriteVersionBack, value))
+            {
+                RebuildPreview();
+            }
+        }
+    }
+
     /// <summary>一句话说明这次会发布成什么形态（框架依赖/自包含 + 运行时 + 其它开关）。</summary>
     public string PublishModeSummary
     {
@@ -569,7 +601,8 @@ public sealed class MainViewModel : ObservableObject
             }
 
             var productName = string.IsNullOrWhiteSpace(MsiProductName) ? SelectedProject.Name : MsiProductName.Trim();
-            var version = MsiVersion.Normalize(NullIfEmpty(VersionOverride) ?? SelectedProject.Version);
+            var version = MsiVersion.Normalize(
+                ResolveMsiVersion(out _, out _) ?? NullIfEmpty(VersionOverride) ?? SelectedProject.Version);
             var fileName = ZipNaming.Resolve(
                 MsiNamingMode,
                 ZipOptions.DefaultDateFormat,
@@ -579,6 +612,68 @@ public sealed class MainViewModel : ObservableObject
                 ".msi");
 
             return Path.Combine(PathLayout.GetProjectRoot(OutputRoot, SelectedProject.Name), fileName);
+        }
+    }
+
+    /// <summary>本次 MSI 会用到的版本（启用自动递增时是递增后的版本）。</summary>
+    public string MsiVersionPreview
+    {
+        get
+        {
+            if (SelectedProject is null)
+            {
+                return "本次版本：（未选择项目）";
+            }
+
+            if (!MakeMsi)
+            {
+                return "本次版本：（未启用 MSI）";
+            }
+
+            var version = ResolveMsiVersion(out var baseVersion, out var reason);
+            if (version is null)
+            {
+                return "本次版本：无法确定 —— " + (reason ?? "项目里没有版本号");
+            }
+
+            if (!MsiAutoBumpVersion)
+            {
+                return "本次版本：" + version + "（未启用自动递增）";
+            }
+
+            var where = MsiWriteVersionBack ? "并写回项目 csproj" : "只用于本次打包";
+            return "本次版本：" + version + "（自动递增，基准 " + (baseVersion ?? "未知") + "，" + where + "）";
+        }
+    }
+
+    /// <summary>本次 MSI 要用的版本号；启用自动递增时返回递增后的值。</summary>
+    private string? ResolveMsiVersion(out string? baseVersion, out string? reason)
+    {
+        baseVersion = null;
+        reason = null;
+        var project = SelectedProject;
+        if (project is null)
+        {
+            return null;
+        }
+
+        var projectVersion = NullIfEmpty(VersionOverride) ?? project.Version;
+        if (!MsiAutoBumpVersion)
+        {
+            baseVersion = projectVersion;
+            return projectVersion;
+        }
+
+        try
+        {
+            var plan = _versionService.Resolve(new MsiOptions { AutoBumpVersion = true }, project.Path, projectVersion);
+            baseVersion = plan?.BaseVersion;
+            return plan?.NextVersion;
+        }
+        catch (PublishException ex)
+        {
+            reason = ex.Message;
+            return null;
         }
     }
 
@@ -634,6 +729,8 @@ public sealed class MainViewModel : ObservableObject
         MsiCreateShortcut = settings.MsiCreateShortcut;
         MsiNamingMode = settings.MsiNamingMode;
         MsiCustomName = settings.MsiCustomName ?? string.Empty;
+        MsiAutoBumpVersion = settings.MsiAutoBumpVersion;
+        MsiWriteVersionBack = settings.MsiWriteVersionBack;
         _lastProjectPath = settings.LastProjectPath;
 
         RecentProjects.Clear();
@@ -833,6 +930,22 @@ public sealed class MainViewModel : ObservableObject
                 StatusText = $"发布成功：{result.FileCount} 个文件，用时 {result.Duration.TotalSeconds:F1}s{extra}。";
                 PersistSettings();
 
+                if (result.BumpedVersion is not null)
+                {
+                    StatusText += " 本次版本：" + result.BumpedVersion + "。";
+                    // 写回只改了磁盘上的 csproj：这里定点刷新一下界面上显示的项目版本。
+                    await RefreshSelectedProjectAsync().ConfigureAwait(true);
+                }
+
+                if (result.VersionError is not null)
+                {
+                    AppendLog("[版本] 写回/记录失败：" + result.VersionError);
+                    _dialogs.ShowError(
+                        "安装包已经生成，但新版本没能写回项目：" + Environment.NewLine + Environment.NewLine
+                        + result.VersionError,
+                        "版本写回失败");
+                }
+
                 if (result.MsiError is not null)
                 {
                     _dialogs.ShowError(
@@ -869,6 +982,54 @@ public sealed class MainViewModel : ObservableObject
             _cancellation?.Dispose();
             _cancellation = null;
         }
+    }
+
+    /// <summary>
+    /// 发布成功后重新读取项目版本（自动递增写回 csproj、或版本记录推进之后，界面上的版本会变）。
+    /// 只替换 ProjectInfo、不重新载入发布配置 —— 走 SelectedProject 的 setter 会把界面上改过的
+    /// 常用设置与「其他属性」冲掉。
+    /// </summary>
+    private async Task RefreshSelectedProjectAsync()
+    {
+        var project = SelectedProject;
+        if (project is null)
+        {
+            return;
+        }
+
+        ProjectInfo refreshed;
+        try
+        {
+            refreshed = await _inspector.InspectAsync(project.Path, project.SolutionPath).ConfigureAwait(true);
+        }
+        catch (Exception ex)
+        {
+            AppendLog("[版本] 重新读取项目版本失败：" + ex.Message);
+            return;
+        }
+
+        if (string.Equals(project.Version, refreshed.Version, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        var index = Projects.IndexOf(project);
+        if (index >= 0)
+        {
+            Projects[index] = refreshed;
+        }
+
+        _selectedProject = refreshed;
+        OnPropertyChanged(nameof(SelectedProject));
+        OnPropertyChanged(nameof(ProjectSummary));
+        OnPropertyChanged(nameof(ProjectVersion));
+        OnPropertyChanged(nameof(PublishDirectoryPreview));
+        OnPropertyChanged(nameof(ZipPathPreview));
+        OnPropertyChanged(nameof(MsiPathPreview));
+        OnPropertyChanged(nameof(MsiVersionPreview));
+        OnPropertyChanged(nameof(PublishModeSummary));
+
+        AppendLog("[版本] 界面已刷新项目版本：" + (refreshed.Version ?? "未解析"));
     }
 
     private async Task BrowseProjectAsync()
@@ -1022,6 +1183,8 @@ public sealed class MainViewModel : ObservableObject
             ProductName = NullIfEmpty(MsiProductName),
             Manufacturer = NullIfEmpty(MsiManufacturer),
             CreateShortcut = MsiCreateShortcut,
+            AutoBumpVersion = MsiAutoBumpVersion,
+            WriteVersionBack = MsiWriteVersionBack,
             NamingMode = MsiNamingMode,
             CustomName = NullIfEmpty(MsiCustomName),
             Version = options.VersionOverride ?? project.Version,
@@ -1060,6 +1223,7 @@ public sealed class MainViewModel : ObservableObject
         OnPropertyChanged(nameof(PublishDirectoryPreview));
         OnPropertyChanged(nameof(ZipPathPreview));
         OnPropertyChanged(nameof(MsiPathPreview));
+        OnPropertyChanged(nameof(MsiVersionPreview));
         OnPropertyChanged(nameof(PublishModeSummary));
     }
 
@@ -1254,6 +1418,8 @@ public sealed class MainViewModel : ObservableObject
             MsiCreateShortcut = MsiCreateShortcut,
             MsiNamingMode = MsiNamingMode,
             MsiCustomName = NullIfEmpty(MsiCustomName),
+            MsiAutoBumpVersion = MsiAutoBumpVersion,
+            MsiWriteVersionBack = MsiWriteVersionBack,
             LastProjectPath = string.IsNullOrWhiteSpace(ProjectPath) ? _lastProjectPath : ProjectPath,
             RecentProjects = RecentProjects.ToList(),
         });

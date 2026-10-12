@@ -17,6 +17,18 @@ public sealed class MsiOptions
     /// <summary>是否创建开始菜单快捷方式。</summary>
     public bool CreateShortcut { get; set; } = true;
 
+    /// <summary>打包 MSI 时自动把版本递增一位（新版本用于本次发布，也可能写回项目）。</summary>
+    public bool AutoBumpVersion { get; set; }
+
+    /// <summary>
+    /// 自动递增后把新版本写回项目 csproj 的 &lt;Version&gt;。
+    /// 这是本工具唯一会改动源文件的地方，默认跟随「自动递增」开启；写前会先把原文件备份到输出目录。
+    /// </summary>
+    public bool WriteVersionBack { get; set; } = true;
+
+    /// <summary>自动递增前的基准版本；由工作流解析后填入，用于日志与界面提示。</summary>
+    public string? BaseVersion { get; set; }
+
     /// <summary>快捷方式指向的可执行文件（发布目录内的相对路径）；为空时自动识别。</summary>
     public string? EntryExecutable { get; set; }
 

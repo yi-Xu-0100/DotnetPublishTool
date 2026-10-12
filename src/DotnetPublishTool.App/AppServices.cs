@@ -12,15 +12,17 @@ public static class AppServices
         var runner = new DotnetProcessRunner();
         var inspector = new ProjectInspector(runner);
         var profileStore = new PublishProfileStore();
+        var versionService = new MsiVersionService();
         var workflow = new PublishWorkflow(
-            profileStore, new PublishCommandBuilder(), runner, new ZipPackager(), new MsiPackageBuilder());
+            profileStore, new PublishCommandBuilder(), runner, new ZipPackager(), new MsiPackageBuilder(), versionService);
 
         var viewModel = new MainViewModel(
             dialogs,
             settingsService ?? new AppSettingsService(),
             inspector,
             profileStore,
-            workflow);
+            workflow,
+            versionService);
 
         viewModel.Initialize();
         return viewModel;

@@ -4,7 +4,7 @@ namespace DotnetPublishTool.Core.Models;
 public sealed class AppSettings
 {
     /// <summary>当前设置结构版本；用于让新增的默认值在老配置上生效。</summary>
-    public const int CurrentSettingsVersion = 4;
+    public const int CurrentSettingsVersion = 5;
 
     /// <summary>设置结构版本；0 表示旧版（无版本号）。</summary>
     public int SettingsVersion { get; set; }
@@ -35,6 +35,12 @@ public sealed class AppSettings
     public ZipNamingMode MsiNamingMode { get; set; } = ZipNamingMode.ProjectNameVersion;
 
     public string? MsiCustomName { get; set; }
+
+    /// <summary>打包 MSI 时自动递增版本。</summary>
+    public bool MsiAutoBumpVersion { get; set; }
+
+    /// <summary>自动递增后把新版本写回项目 csproj（本工具唯一会改动源文件的选项）。</summary>
+    public bool MsiWriteVersionBack { get; set; } = true;
 
     public string? LastProjectPath { get; set; }
 

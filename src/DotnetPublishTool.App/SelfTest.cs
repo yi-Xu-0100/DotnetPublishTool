@@ -12,7 +12,7 @@ namespace DotnetPublishTool.App;
 
 /// <summary>
 /// 无界面自检：加载真实 XAML（验证资源与控件），再驱动 ViewModel 完成一次真实发布（可选打包）。
-/// 用法：DotnetPublishTool.exe --selftest --project &lt;项目&gt; --out &lt;输出目录&gt; [--zip] [--msi] [--zip-mode ProjectNameVersion]
+/// 用法：DotnetPublishTool.exe --selftest --project &lt;项目&gt; --out &lt;输出目录&gt; [--zip] [--msi] [--msi-bump-version] [--msi-write-version-back] [--zip-mode ProjectNameVersion]
 /// </summary>
 internal static class SelfTest
 {
@@ -24,6 +24,8 @@ internal static class SelfTest
         var renderPath = GetOption(args, "--render");
         var wantZip = args.Contains("--zip", StringComparer.OrdinalIgnoreCase);
         var wantMsi = args.Contains("--msi", StringComparer.OrdinalIgnoreCase);
+        var wantBump = args.Contains("--msi-bump-version", StringComparer.OrdinalIgnoreCase);
+        var wantWriteBack = args.Contains("--msi-write-version-back", StringComparer.OrdinalIgnoreCase);
 
         if (string.IsNullOrWhiteSpace(project))
         {
@@ -104,6 +106,8 @@ internal static class SelfTest
 
                 viewModel.MakeZip = wantZip;
                 viewModel.MakeMsi = wantMsi;
+                viewModel.MsiAutoBumpVersion = wantBump;
+                viewModel.MsiWriteVersionBack = wantWriteBack;
 
                 var result = viewModel.PublishAsync().GetAwaiter().GetResult();
                 var payload = JsonSerializer.Serialize(new
@@ -115,6 +119,9 @@ internal static class SelfTest
                     zipPath = result?.ZipPath,
                     msiPath = result?.MsiPath,
                     msiError = result?.MsiError,
+                    bumpedVersion = result?.BumpedVersion,
+                    versionError = result?.VersionError,
+                    projectVersion = viewModel.ProjectVersion,
                     fileCount = result?.FileCount ?? 0,
                     durationSeconds = Math.Round(result?.Duration.TotalSeconds ?? 0, 2),
                     error = result?.ErrorMessage,

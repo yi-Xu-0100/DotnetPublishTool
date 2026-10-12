@@ -8,6 +8,7 @@ DotnetPublishTool 端到端冒烟工具
   list     <project>                      解析项目并列出发现的发布配置
   publish  <project> [options]            按配置发布（可打包）
   pack-msi <发布目录> [options]            把已发布的目录做成 MSI 安装包
+  bump     <版本> [<版本> ...]             只算「自动递增版本」的结果，用于核对规则
 
 options:
   --out <dir>            输出目录（publish 默认 ./.smoke-out；pack-msi 默认当前目录）
@@ -25,6 +26,9 @@ options:
   --msi-manufacturer <名> MSI 发布者（默认产品名）
   --msi-version <x.y.z>  MSI 安装版本（默认项目版本）
   --msi-mode <mode>      MSI 命名方式：ProjectName | ProjectNameVersion | ProjectNameDate | Custom
+  --msi-bump-version     打包前自动把版本递增一位（新版本用于本次发布）
+  --msi-write-version-back
+                         递增后把新版本写回项目 csproj（会改源文件；默认不写回，只记在本机版本记录里）
   --msi-name <name>      MSI 命名方式为 Custom 时使用的名称
   --no-msi-shortcut      不创建开始菜单快捷方式
 
@@ -60,6 +64,7 @@ return command switch
     "list" => await ListAsync(rest),
     "publish" => await PublishAsync(rest),
     "pack-msi" => PackMsi(rest),
+    "bump" => Bump(rest),
     _ => Unknown(),
 };
 
@@ -141,7 +146,7 @@ static async Task<int> PublishAsync(List<string> arguments)
     var inspector = new ProjectInspector(runner);
     var store = new PublishProfileStore();
     var workflow = new PublishWorkflow(
-        store, new PublishCommandBuilder(), runner, new ZipPackager(), new MsiPackageBuilder());
+        store, new PublishCommandBuilder(), runner, new ZipPackager(), new MsiPackageBuilder(), new MsiVersionService());
 
     var project = await inspector.InspectAsync(target);
     var profiles = store.Discover(project);
@@ -231,6 +236,8 @@ static async Task<int> PublishAsync(List<string> arguments)
         result.ZipPath,
         result.MsiPath,
         result.MsiError,
+        result.BumpedVersion,
+        result.VersionError,
         result.FileCount,
         durationSeconds = Math.Round(result.Duration.TotalSeconds, 2),
         result.CommandLine,
@@ -238,6 +245,33 @@ static async Task<int> PublishAsync(List<string> arguments)
     }, new JsonSerializerOptions { WriteIndented = true }));
 
     return result.Success ? 0 : 1;
+}
+
+/// <summary>只算版本递增，例：bump 1.4 1.4.2 1.4.65535 1.255.65535（用于核对自动递增规则）。</summary>
+static int Bump(List<string> versions)
+{
+    if (versions.Count == 0)
+    {
+        Console.Error.WriteLine("用法：bump <版本> [<版本> ...]");
+        return 2;
+    }
+
+    var results = new List<object>();
+    foreach (var version in versions)
+    {
+        try
+        {
+            results.Add(new { version, next = MsiVersionService.Next(version) });
+        }
+        catch (PublishException ex)
+        {
+            Console.Error.WriteLine(version + " -> " + ex.Message);
+            return 1;
+        }
+    }
+
+    Console.WriteLine(JsonSerializer.Serialize(results, new JsonSerializerOptions { WriteIndented = true }));
+    return 0;
 }
 
 /// <summary>把一个已经发布好的目录做成 MSI 安装包（本工具自身的安装包也走这条命令）。</summary>
@@ -296,6 +330,9 @@ static MsiOptions BuildMsiOptions(List<string> arguments, string? projectVersion
         ? mode
         : ZipNamingMode.ProjectNameVersion,
     CustomName = GetOption(arguments, "--msi-name"),
+    AutoBumpVersion = HasFlag(arguments, "--msi-bump-version"),
+    // 默认不写回：冒烟工具经常跑示例项目，别顺手改了仓库里的 csproj。
+    WriteVersionBack = HasFlag(arguments, "--msi-write-version-back"),
 };
 
 static string? GetOption(List<string> arguments, string name)
