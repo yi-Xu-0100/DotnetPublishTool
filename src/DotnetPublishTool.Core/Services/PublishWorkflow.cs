@@ -326,7 +326,11 @@ public sealed class PublishWorkflow
 
         if (!string.IsNullOrWhiteSpace(options.VersionOverride))
         {
-            Set("Version", options.VersionOverride);
+            // 与命令行一致：四个版本键一起写，避免被项目里显式的版本键压过去。
+            foreach (var key in VersionKeys.All)
+            {
+                Set(key, options.VersionOverride);
+            }
         }
 
         return PublishOptionKeys.Order(ordered).ToList();

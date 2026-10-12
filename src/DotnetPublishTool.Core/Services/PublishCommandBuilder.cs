@@ -44,7 +44,12 @@ public sealed class PublishCommandBuilder
 
         if (!string.IsNullOrWhiteSpace(options.VersionOverride))
         {
-            arguments.Add("-p:Version=" + options.VersionOverride);
+            // 四个版本键一起覆盖：项目显式写了 AssemblyVersion/FileVersion/InformationalVersion 时，
+            // 只给 -p:Version 压不住它们 —— 安装包会是新版本，应用自己报告的却还是旧版本。
+            foreach (var key in VersionKeys.All)
+            {
+                arguments.Add("-p:" + key + "=" + options.VersionOverride);
+            }
         }
 
         if (options.NoRestore)

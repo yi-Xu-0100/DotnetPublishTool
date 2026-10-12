@@ -97,6 +97,7 @@ msiexec /a SampleConsoleApp_1.4.2.msi /qn TARGETDIR=D:\image\   # 管理安装�
 - 写回项目：**只改值等于基准版本的那些版本键**（例如三个键都是 2.1.2.0 就三个一起改成 2.1.3.0；被刻意钉住的 `AssemblyVersion` 不会被误改），一个都不匹配时才改/插 `<Version>`；**只有这一处会动源文件**，写前把原 csproj 备份到 `<输出目录>/<项目名>/csproj-backup/`。
 - 不写回：新版本记在 `%APPDATA%\DotnetPublishTool\msi-versions.json`（不可写时退到 `%TEMP%\DotnetPublishTool\`），下次接着往上加。
 - 只有安装包真的生成成功才推进版本——MSI 失败时版本不变，重跑还是同一个号。
+- **新版本会一起交给编译**：勾选「版本覆盖」或自动递增时，`Version` / `SAssemblyVersion` / `FileVersion` / `InformationalVersion` 四个版本键一起设成新版本。只给 `Version` 是压不住项目里显式写的后三个的 —— 那样会出现「安装包是 2.1.3、应用自己还报 2.1.2」的不一致。写回 csproj 仍然只在安装包成功之后做，但**编译用的是新版本**。
 - 发布成功后界面会**自动重新读取项目版本**（项目那一行、以及 zip / 安装包 / 本次版本的预览都会跟着更新），不用手动点「重新扫描」；重新读取只刷新项目信息，不会冲掉你在界面上改过的常用设置与「其他属性」。
 
 **实现**：不依赖 WiX，也不联网 —— 直接用系统自带的 `msi.dll` 写 Windows Installer 数据库，用系统自带的 `makecab.exe` 压 CAB（作为内嵌流写进安装包，因此安装包只有一个文件）。
