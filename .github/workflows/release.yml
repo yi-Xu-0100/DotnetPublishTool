@@ -131,7 +131,7 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: gh release create
+      - name: 创建或补全 Release
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -141,5 +141,20 @@ jobs:
           $tag = "v$version"
           Get-ChildItem dist | Select-Object Name, Length | Format-Table
 
-          gh release create $tag dist/* -R '${{ github.repository }}' --title "DotnetPublishTool $version" --generate-notes
-          if ($LASTEXITCODE -ne 0) { throw "创建 Release 失败（退出码 $LASTEXITCODE）。" }
+          $repo = '${{ github.repository }}'
+
+          # 如果这个 tag 的 Release 已经存在（比如手工建过），只补附件、不再重复创建 —— 否则整条流水线会因为
+          # "release already exists" 失败，附件永远传不上去。
+          gh release view $tag -R $repo 2>&1 | Out-Null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag -R $repo --title "DotnetPublishTool $version" --generate-notes
+            if ($LASTEXITCODE -ne 0) { throw "创建 Release 失败（退出码 $LASTEXITCODE）。" }
+          }
+          else {
+            Write-Host "Release $tag 已存在：只上传/覆盖附件。"
+          }
+
+          gh release upload $tag dist/* -R $repo --clobber
+          if ($LASTEXITCODE -ne 0) { throw "上传附件失败（退出码 $LASTEXITCODE）。" }
+
+          gh release view $tag -R $repo --json name,tagName,assets
