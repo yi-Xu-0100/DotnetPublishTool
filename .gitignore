@@ -32,3 +32,6 @@ tools/DotnetPublishTool.Smoke/out/
 *.log
 Thumbs.db
 desktop.ini
+
+# Release 正文（tools/make-release-notes.ps1 的本地产物）
+release-notes.md

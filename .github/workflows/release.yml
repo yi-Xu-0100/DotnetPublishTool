@@ -126,6 +126,10 @@ jobs:
     if: github.ref_type == 'tag' || inputs.make_release
     runs-on: windows-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # 生成 Release 正文要读提交历史与历史 tag
+
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -143,15 +147,22 @@ jobs:
 
           $repo = '${{ github.repository }}'
 
-          # 如果这个 tag 的 Release 已经存在（比如手工建过），只补附件、不再重复创建 —— 否则整条流水线会因为
+          # 正文按规范提交生成（feat/fix/docs… 分组），不用 GitHub 自动汇总
+          & tools/make-release-notes.ps1 -Tag $tag -Output release-notes.md
+          if ($LASTEXITCODE -ne 0) { throw "生成 Release 正文失败（退出码 $LASTEXITCODE）。" }
+          Get-Content release-notes.md -Encoding UTF8 | Select-Object -First 15
+
+          # 如果这个 tag 的 Release 已经存在（比如手工建过），就刷新正文并只补附件 —— 否则整条流水线会因为
           # "release already exists" 失败，附件永远传不上去。
           gh release view $tag -R $repo 2>&1 | Out-Null
           if ($LASTEXITCODE -ne 0) {
-            gh release create $tag -R $repo --title "DotnetPublishTool $version" --generate-notes
+            gh release create $tag -R $repo --title "DotnetPublishTool $version" --notes-file release-notes.md
             if ($LASTEXITCODE -ne 0) { throw "创建 Release 失败（退出码 $LASTEXITCODE）。" }
           }
           else {
-            Write-Host "Release $tag 已存在：只上传/覆盖附件。"
+            Write-Host "Release $tag 已存在：刷新正文并上传/覆盖附件。"
+            gh release edit $tag -R $repo --notes-file release-notes.md
+            if ($LASTEXITCODE -ne 0) { throw "刷新 Release 正文失败（退出码 $LASTEXITCODE）。" }
           }
 
           gh release upload $tag dist/* -R $repo --clobber
