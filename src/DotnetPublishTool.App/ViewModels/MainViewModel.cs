@@ -62,6 +62,7 @@ public sealed class MainViewModel : ObservableObject
     private string _msiProductName = string.Empty;
     private string _msiManufacturer = string.Empty;
     private bool _msiCreateShortcut = true;
+    private bool _msiCreateDesktopShortcut = true;
     private ZipNamingMode _msiNamingMode = ZipNamingMode.ProjectNameVersion;
     private string _msiCustomName = string.Empty;
     private bool _msiAutoBumpVersion;
@@ -93,6 +94,7 @@ public sealed class MainViewModel : ObservableObject
         ClearLogCommand = new RelayCommand(ClearLog);
         ClearRecentProjectsCommand = new RelayCommand(ClearRecentProjects, () => RecentProjects.Count > 0);
         SaveProfileCommand = new RelayCommand(() => SaveProfileOnly(), () => !IsBusy && SelectedProject is not null);
+        OpenProjectFolderCommand = new RelayCommand(OpenProjectFolder, () => SelectedProject is not null);
         OpenOutputFolderCommand = new RelayCommand(OpenOutputFolder, () => SelectedProject is not null);
         CancelCommand = new RelayCommand(Cancel, () => IsBusy);
         PublishCommand = new AsyncRelayCommand(PublishAsync, () => !IsBusy && SelectedProject is not null);
@@ -149,6 +151,8 @@ public sealed class MainViewModel : ObservableObject
     public RelayCommand ClearRecentProjectsCommand { get; }
 
     public RelayCommand SaveProfileCommand { get; }
+
+    public RelayCommand OpenProjectFolderCommand { get; }
 
     public RelayCommand OpenOutputFolderCommand { get; }
 
@@ -468,6 +472,12 @@ public sealed class MainViewModel : ObservableObject
         set => SetProperty(ref _msiCreateShortcut, value);
     }
 
+    public bool MsiCreateDesktopShortcut
+    {
+        get => _msiCreateDesktopShortcut;
+        set => SetProperty(ref _msiCreateDesktopShortcut, value);
+    }
+
     public ZipNamingMode MsiNamingMode
     {
         get => _msiNamingMode;
@@ -727,6 +737,7 @@ public sealed class MainViewModel : ObservableObject
         MsiProductName = settings.MsiProductName ?? string.Empty;
         MsiManufacturer = settings.MsiManufacturer ?? string.Empty;
         MsiCreateShortcut = settings.MsiCreateShortcut;
+        MsiCreateDesktopShortcut = settings.MsiCreateDesktopShortcut;
         MsiNamingMode = settings.MsiNamingMode;
         MsiCustomName = settings.MsiCustomName ?? string.Empty;
         MsiAutoBumpVersion = settings.MsiAutoBumpVersion;
@@ -1070,6 +1081,20 @@ public sealed class MainViewModel : ObservableObject
 
     private void Cancel() => _cancellation?.Cancel();
 
+    /// <summary>在资源管理器里打开当前项目（.csproj）所在目录。</summary>
+    private void OpenProjectFolder()
+    {
+        var projectPath = SelectedProject?.Path ?? ProjectPath;
+        var directory = string.IsNullOrWhiteSpace(projectPath) ? null : Path.GetDirectoryName(projectPath);
+        if (string.IsNullOrEmpty(directory) || !Directory.Exists(directory))
+        {
+            _dialogs.ShowInfo("找不到项目所在目录：" + (string.IsNullOrEmpty(directory) ? projectPath ?? "（没有选中项目）" : directory));
+            return;
+        }
+
+        Process.Start(new ProcessStartInfo { FileName = directory, UseShellExecute = true });
+    }
+
     private void OpenOutputFolder()
     {
         var directory = SelectedProject is null
@@ -1183,6 +1208,7 @@ public sealed class MainViewModel : ObservableObject
             ProductName = NullIfEmpty(MsiProductName),
             Manufacturer = NullIfEmpty(MsiManufacturer),
             CreateShortcut = MsiCreateShortcut,
+            CreateDesktopShortcut = MsiCreateDesktopShortcut,
             AutoBumpVersion = MsiAutoBumpVersion,
             WriteVersionBack = MsiWriteVersionBack,
             NamingMode = MsiNamingMode,
@@ -1416,6 +1442,7 @@ public sealed class MainViewModel : ObservableObject
             MsiProductName = NullIfEmpty(MsiProductName),
             MsiManufacturer = NullIfEmpty(MsiManufacturer),
             MsiCreateShortcut = MsiCreateShortcut,
+            MsiCreateDesktopShortcut = MsiCreateDesktopShortcut,
             MsiNamingMode = MsiNamingMode,
             MsiCustomName = NullIfEmpty(MsiCustomName),
             MsiAutoBumpVersion = MsiAutoBumpVersion,
@@ -1431,6 +1458,7 @@ public sealed class MainViewModel : ObservableObject
         RescanCommand.RaiseCanExecuteChanged();
         BrowseOutputRootCommand.RaiseCanExecuteChanged();
         SaveProfileCommand.RaiseCanExecuteChanged();
+        OpenProjectFolderCommand.RaiseCanExecuteChanged();
         OpenOutputFolderCommand.RaiseCanExecuteChanged();
         CancelCommand.RaiseCanExecuteChanged();
         PublishCommand.RaiseCanExecuteChanged();

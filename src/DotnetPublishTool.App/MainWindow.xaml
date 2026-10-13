@@ -163,6 +163,8 @@
           </Grid>
           <CheckBox Content="创建开始菜单快捷方式" IsChecked="{Binding MsiCreateShortcut}" Margin="0,8,0,0"
                     ToolTip="快捷方式指向发布产物里的主程序，卸载时一并移除" />
+          <CheckBox Content="创建桌面快捷方式" IsChecked="{Binding MsiCreateDesktopShortcut}" Margin="0,6,0,0"
+                    ToolTip="桌面也放一份；每机器安装时放的是「公共桌面」，同样随卸载移除" />
           <TextBlock Text="{Binding MsiVersionPreview}" TextWrapping="Wrap"
                      Foreground="{StaticResource TextSecondary}" Margin="0,6,0,0" />
           <TextBlock Text="{Binding MsiPathPreview, StringFormat=安装包：{0}}" TextWrapping="Wrap"
@@ -297,12 +299,14 @@
       <DockPanel>
         <StackPanel Orientation="Horizontal" DockPanel.Dock="Right">
           <Button Content="保存配置副本" Command="{Binding SaveProfileCommand}" />
+          <Button Content="打开项目地址" Command="{Binding OpenProjectFolderCommand}" />
           <Button Content="打开输出目录" Command="{Binding OpenOutputFolderCommand}" />
           <Button Content="取消" Command="{Binding CancelCommand}" />
           <Button Content="生成并发布" Command="{Binding PublishCommand}" FontWeight="Bold"
                   Background="{StaticResource Accent}" Foreground="White" MinWidth="110" />
         </StackPanel>
-        <ProgressBar DockPanel.Dock="Right" Width="140" Height="14" Margin="10,0,0,0" IsIndeterminate="{Binding IsBusy}" />
+        <ProgressBar DockPanel.Dock="Right" Width="140" Margin="10,0,0,0" VerticalAlignment="Stretch"
+                     IsIndeterminate="{Binding IsBusy}" />
         <TextBlock Text="{Binding StatusText}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
       </DockPanel>
     </Border>
