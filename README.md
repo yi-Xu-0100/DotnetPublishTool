@@ -107,13 +107,13 @@ msiexec /a SampleConsoleApp_1.4.2.msi /qn TARGETDIR=D:\image\   # 管理安装�
 `tools/make-installer.ps1` 会先 `dotnet publish` 发布界面，再用上面同一套能力生成 `DotnetPublishTool_<版本>.msi`（默认输出到 `artifacts/installer`）：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\tools\make-installer.ps1                          # 版本取项目评估值（当前 1.1.2）
-powershell -ExecutionPolicy Bypass -File .\tools\make-installer.ps1 -Version 1.1.2 -Manufacturer "某某公司"
+powershell -ExecutionPolicy Bypass -File .\tools\make-installer.ps1                          # 版本取项目评估值（当前 1.2.0）
+powershell -ExecutionPolicy Bypass -File .\tools\make-installer.ps1 -Version 1.2.0 -Manufacturer "某某公司"
 ```
 
 **必须在普通（非沙箱）终端运行**：沙箱里 `dotnet publish` 写不了项目的 `obj`，产物还会继承 Low 完整性标签（脚本自带检测，会直接拒绝）。
 
-**版本号就是「能不能升级」**：唯一来源是 [DotnetPublishTool.App.csproj](src/DotnetPublishTool.App/DotnetPublishTool.App.csproj) 里的 `<Version>`（当前 `1.1.2`），CI 与 `tools/make-installer.ps1` 都读它。升级代码由「发布者 + 产品名」稳定推导（要一直保持不变），产品码由「升级代码 + 版本」推导 —— 所以**同版本重装等于修复，换版本才是大版本升级**（先装新、再卸旧）。发新版就改这一处，然后打 `v<版本>` tag；tag 与 `<Version>` 不一致时 CI 会直接失败。
+**版本号就是「能不能升级」**：唯一来源是 [DotnetPublishTool.App.csproj](src/DotnetPublishTool.App/DotnetPublishTool.App.csproj) 里的 `<Version>`（当前 `1.2.0`），CI 与 `tools/make-installer.ps1` 都读它。升级代码由「发布者 + 产品名」稳定推导（要一直保持不变），产品码由「升级代码 + 版本」推导 —— 所以**同版本重装等于修复，换版本才是大版本升级**（先装新、再卸旧）。发新版就改这一处，然后打 `v<版本>` tag；tag 与 `<Version>` 不一致时 CI 会直接失败。
 
 **目标机要求**：框架依赖的产物要求目标机已装 **.NET 10 桌面运行时**（要自带运行时用 `-SelfContained`，体积大，且本机访问不到 NuGet 时会在还原阶段报 `NU1301`）。安装包不做代码签名，SmartScreen 会提示「未知发布者」。
 
@@ -163,15 +163,15 @@ dotnet publish src/DotnetPublishTool.App/DotnetPublishTool.App.csproj -c Release
 ```powershell
 # 1) 先改 src/DotnetPublishTool.App/DotnetPublishTool.App.csproj 里的 <Version>
 # 2) 提交后打 tag —— tag 必须与 <Version> 完全一致，否则 CI 直接失败
-git tag v1.1.2
+git tag v1.2.0
 git push origin main --tags
 ```
 
 CI（`.github/workflows/release.yml`，windows-latest + .NET 10 SDK）对两套口径各出一份，文件名带版本与变体：
 
 ```text
-DotnetPublishTool_1.1.2_win-x64_framework-dependent.msi / .zip   # 体积小；目标机需 .NET 10 桌面运行时
-DotnetPublishTool_1.1.2_win-x64_self-contained.msi / .zip        # 自带运行时；体积大
+DotnetPublishTool_1.2.0_win-x64_framework-dependent.msi / .zip   # 体积小；目标机需 .NET 10 桌面运行时
+DotnetPublishTool_1.2.0_win-x64_self-contained.msi / .zip        # 自带运行时；体积大
 ```
 
 - **Release 正文按规范提交生成**：CI 调 `tools/make-release-notes.ps1`，把上一个 tag 到本 tag 之间的提交按 `feat` / `fix` / `docs`… 分组渲染（提交正文里的「- 说明」会作为子条目带出来），并附下载清单与 compare 链接；Release 已存在时正文也会被刷新。本地预览：`pwsh tools/make-release-notes.ps1 -Tag v1.1.2`。
