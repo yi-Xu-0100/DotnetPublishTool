@@ -41,6 +41,7 @@ public sealed class MsiPackageBuilder
     private const string FeatureKey = "MainFeature";
     private const string ShortcutKey = "SC_MainApplication";
     private const string MenuFolderKey = "ApplicationProgramsFolder";
+    private const string DesktopShortcutKey = "SC_DesktopApplication";
     private const string InstallFolderInProgramFiles64 = "ProgramFiles64Folder";
     private const string InstallFolderInProgramFiles32 = "ProgramFilesFolder";
     private const string UpgradeFoundProperty = "UPGRADEFOUND";
@@ -248,15 +249,11 @@ public sealed class MsiPackageBuilder
             CabinetBuilder.Create(stagingDirectory, CabinetStreamName, payload.Select(file => file.FileKey).ToList(), log);
             var cabinetPath = Path.Combine(stagingDirectory, CabinetStreamName);
 
-            var createShortcut = options.CreateShortcut && entryExecutable is not null;
-            var shortcutFileKey = createShortcut
-                ? payload.FirstOrDefault(file => string.Equals(file.RelativePath, Path.GetRelativePath(sourceDirectory, entryExecutable!), StringComparison.OrdinalIgnoreCase))?.FileKey
-                : null;
-            if (createShortcut && shortcutFileKey is null)
-            {
-                createShortcut = false;
-                warnings.Add("没有在发布产物里定位到启动程序，安装包不会创建开始菜单快捷方式。");
-            }
+            var entryFileKey = entryExecutable is null
+                ? null
+                : payload.FirstOrDefault(file => string.Equals(file.RelativePath, Path.GetRelativePath(sourceDirectory, entryExecutable), StringComparison.OrdinalIgnoreCase))?.FileKey;
+            var shortcutFileKey = ResolveShortcutTarget(options.CreateShortcut, entryFileKey, "开始菜单", warnings);
+            var desktopShortcutFileKey = ResolveShortcutTarget(options.CreateDesktopShortcut, entryFileKey, "桌面", warnings);
 
             var spec = new PackageSpec
             {
@@ -272,6 +269,7 @@ public sealed class MsiPackageBuilder
                 CabinetPath = cabinetPath,
                 Is64Bit = is64Bit,
                 ShortcutTargetFileKey = shortcutFileKey,
+                DesktopShortcutTargetFileKey = desktopShortcutFileKey,
             };
 
             var msiName = ZipNaming.Resolve(
@@ -320,6 +318,32 @@ public sealed class MsiPackageBuilder
                 TryDeleteDirectory(stagingDirectory);
             }
         }
+    }
+
+    /// <summary>建一条「指向启动程序」的快捷方式（开始菜单与桌面共用：都挂在启动程序那个组件上，卸载时一起删）。</summary>
+    private static void InsertApplicationShortcut(MsiDatabase database, string shortcutKey, string directoryKey, PackageSpec spec, string targetFileKey)
+    {
+        database.Insert(
+            "INSERT INTO `Shortcut` (`Shortcut`,`Directory_`,`Name`,`Component_`,`Target`,`Arguments`,`Description`,`Hotkey`,`Icon_`,`IconIndex`,`ShowCmd`,`WkDir`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            shortcutKey, directoryKey, spec.ProductName, "c_" + targetFileKey,
+            "[!" + targetFileKey + "]", null, spec.ProductName, null, null, null, null, InstallFolderKey);
+    }
+
+    /// <summary>要建快捷方式时取出启动程序在 File 表里的键；产物里没有 exe 就退掉并记一条警告。</summary>
+    private static string? ResolveShortcutTarget(bool wanted, string? entryFileKey, string location, List<string> warnings)
+    {
+        if (!wanted)
+        {
+            return null;
+        }
+
+        if (entryFileKey is null)
+        {
+            warnings.Add("没有在发布产物里定位到启动程序，安装包不会创建" + location + "快捷方式。");
+            return null;
+        }
+
+        return entryFileKey;
     }
 
     /// <summary>把发布目录里的文件复制到暂存目录，复制后的名字（File 键）就是 cab 里的条目名。</summary>
@@ -552,6 +576,12 @@ public sealed class MsiPackageBuilder
             database.Insert("INSERT INTO `Directory` (`Directory`,`Directory_Parent`,`DefaultDir`) VALUES (?,?,?)", MenuFolderKey, "ProgramMenuFolder", spec.InstallFolderName);
         }
 
+        if (spec.DesktopShortcutTargetFileKey is not null)
+        {
+            // DesktopFolder 是 MSI 的系统文件夹：每机器安装解析成「公共桌面」，每用户安装是当前用户桌面。
+            database.Insert("INSERT INTO `Directory` (`Directory`,`Directory_Parent`,`DefaultDir`) VALUES (?,?,?)", "DesktopFolder", "TARGETDIR", ".");
+        }
+
         database.Insert(
             "INSERT INTO `Feature` (`Feature`,`Feature_Parent`,`Title`,`Description`,`Display`,`Level`,`Directory_`,`Attributes`) VALUES (?,?,?,?,?,?,?,?)",
             FeatureKey, null, spec.ProductName, spec.ProductName, 1, 1, InstallFolderKey, 0);
@@ -600,10 +630,12 @@ public sealed class MsiPackageBuilder
 
         if (withShortcut)
         {
-            database.Insert(
-                "INSERT INTO `Shortcut` (`Shortcut`,`Directory_`,`Name`,`Component_`,`Target`,`Arguments`,`Description`,`Hotkey`,`Icon_`,`IconIndex`,`ShowCmd`,`WkDir`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                ShortcutKey, MenuFolderKey, spec.ProductName, "c_" + spec.ShortcutTargetFileKey!,
-                "[!" + spec.ShortcutTargetFileKey + "]", null, spec.ProductName, null, null, null, null, InstallFolderKey);
+            InsertApplicationShortcut(database, ShortcutKey, MenuFolderKey, spec, spec.ShortcutTargetFileKey!);
+        }
+
+        if (spec.DesktopShortcutTargetFileKey is not null)
+        {
+            InsertApplicationShortcut(database, DesktopShortcutKey, "DesktopFolder", spec, spec.DesktopShortcutTargetFileKey);
         }
 
         foreach (var (action, condition, at) in ExecuteSequence)
@@ -698,6 +730,8 @@ public sealed class MsiPackageBuilder
         public required bool Is64Bit { get; init; }
 
         public string? ShortcutTargetFileKey { get; init; }
+
+        public string? DesktopShortcutTargetFileKey { get; init; }
     }
 
     /// <summary>发布产物里的子目录 → Directory 表行（父目录先于子目录出现）。</summary>

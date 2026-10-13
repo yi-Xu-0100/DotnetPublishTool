@@ -118,7 +118,7 @@ try {
         foreach ($pair in @(@($OldVersion, $payloadOld), @($NewVersion, $payloadNew))) {
             $version = $pair[0]
             $payload = $pair[1]
-            & dotnet run --project $smokeProject -- pack-msi $payload --out $msiDirectory --msi-product $ProductName --msi-manufacturer $Manufacturer --msi-version $version --no-msi-shortcut | Out-Host
+            & dotnet run --project $smokeProject -- pack-msi $payload --out $msiDirectory --msi-product $ProductName --msi-manufacturer $Manufacturer --msi-version $version --no-msi-shortcut --no-msi-desktop-shortcut | Out-Host
             if ($LASTEXITCODE -ne 0) { throw "pack-msi 失败（版本 $version，退出码 $LASTEXITCODE）。" }
         }
 
@@ -159,7 +159,7 @@ try {
             $variantMsi = Join-Path $msiDirectory ('variant-' + $variantIndex + '.msi')
             $env:DOTNETPUBLISHTOOL_UPGRADE_ATTRIBUTES = [string]$variant.Attributes
             try {
-                & dotnet run --project $smokeProject -- pack-msi $payloadNew --out $msiDirectory --msi-product $ProductName --msi-manufacturer $Manufacturer --msi-version $NewVersion --no-msi-shortcut | Out-Null
+                & dotnet run --project $smokeProject -- pack-msi $payloadNew --out $msiDirectory --msi-product $ProductName --msi-manufacturer $Manufacturer --msi-version $NewVersion --no-msi-shortcut --no-msi-desktop-shortcut | Out-Null
                 if ($LASTEXITCODE -ne 0) { throw ('pack-msi 失败（退出码 ' + $LASTEXITCODE + '）') }
             }
             finally {

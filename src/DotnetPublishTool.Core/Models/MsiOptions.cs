@@ -17,6 +17,12 @@ public sealed class MsiOptions
     /// <summary>是否创建开始菜单快捷方式。</summary>
     public bool CreateShortcut { get; set; } = true;
 
+    /// <summary>
+    /// 安装后在桌面也放一份快捷方式。每机器安装（ALLUSERS=1）时 MSI 的 DesktopFolder 解析成「公共桌面」，
+    /// 每用户安装时是当前用户桌面；卸载时一并移除。
+    /// </summary>
+    public bool CreateDesktopShortcut { get; set; } = true;
+
     /// <summary>打包 MSI 时自动把版本递增一位（新版本用于本次发布，也可能写回项目）。</summary>
     public bool AutoBumpVersion { get; set; }
 

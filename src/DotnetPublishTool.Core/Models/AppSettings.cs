@@ -32,6 +32,8 @@ public sealed class AppSettings
     /// <summary>MSI 是否创建开始菜单快捷方式。</summary>
     public bool MsiCreateShortcut { get; set; } = true;
 
+    public bool MsiCreateDesktopShortcut { get; set; } = true;
+
     public ZipNamingMode MsiNamingMode { get; set; } = ZipNamingMode.ProjectNameVersion;
 
     public string? MsiCustomName { get; set; }

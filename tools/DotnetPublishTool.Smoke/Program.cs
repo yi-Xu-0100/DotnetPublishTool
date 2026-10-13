@@ -31,6 +31,8 @@ options:
                          递增后把新版本写回项目 csproj（会改源文件；默认不写回，只记在本机版本记录里）
   --msi-name <name>      MSI 命名方式为 Custom 时使用的名称
   --no-msi-shortcut      不创建开始菜单快捷方式
+  --no-msi-desktop-shortcut
+                         不创建桌面快捷方式
 
 list 也可只在命令行传入项目路径（等价于 list）。
 """;
@@ -324,6 +326,7 @@ static MsiOptions BuildMsiOptions(List<string> arguments, string? projectVersion
     Manufacturer = GetOption(arguments, "--msi-manufacturer"),
     ProductVersion = GetOption(arguments, "--msi-version") ?? projectVersion,
     CreateShortcut = !HasFlag(arguments, "--no-msi-shortcut"),
+    CreateDesktopShortcut = !HasFlag(arguments, "--no-msi-desktop-shortcut"),
     EntryExecutable = GetOption(arguments, "--msi-exe"),
     UpgradeCode = GetOption(arguments, "--msi-upgrade-code"),
     NamingMode = Enum.TryParse<ZipNamingMode>(GetOption(arguments, "--msi-mode"), ignoreCase: true, out var mode)

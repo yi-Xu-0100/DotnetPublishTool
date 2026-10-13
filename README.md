@@ -128,6 +128,7 @@ powershell -ExecutionPolicy Bypass -File .\tools\make-installer.ps1 -Version 1.1
 - 升级行为（卸旧版 + 换文件）可以用 `tools/verify-msi-upgrade.ps1` 验：它会现场产出两个版本的包、用临时产品名装到临时目录、断言「旧版被卸掉、新版文件到位、程序和功能只剩一条」，跑完自动清理。**必须在管理员终端里跑**（每机器安装/卸载需要管理员权限）。
 - 加 `-ProbeVariants` 时脚本会跑**变体矩阵**：逐个改新版包 `Upgrade` 表的 `Attributes`（3 / 258 / 512 / 257 / 259），验证「带 `OnlyDetect(0x2)` 就只检测不卸载」这条因果 —— 这是排查「升级没卸旧版」最快的办法，每种变体各留一份日志。
 - **这些缺陷都在生成器里，不在某个项目的打包流程里**：修好一次，之后给任何项目打的包都带修复；**修复之前打的包（本仓库 v1.0.0 / v1.1.0，以及你用本工具打过的其它项目）都要用修好的版本重打一次**。另外三件属于「每个项目自己的约束」：每次发版把项目版本升上去（同版本重装 MSI 只会走维护模式）、载荷文件最好带版本资源、产品名/发布者不要改（升级码由它们推导）。
+- **桌面快捷方式**：默认与开始菜单一起创建（`Shortcut` 表两条；桌面那条挂在 `DesktopFolder` 上）。每机器安装时 `DesktopFolder` 解析成**公共桌面**（所有用户都看到），每用户安装时是当前用户桌面；卸载时一并移除。想要纯净安装用 `--no-msi-desktop-shortcut`（`tools/make-installer.ps1 -NoDesktopShortcut`）。
 - **每次打包都会自检**：卸旧版那行不能带 `OnlyDetect`、防降级那行必须在、`File.Version` 要与源文件对得上、`Error` / `LaunchCondition` 表不能空；不合格直接报错、不产出安装包。
 - **升级卸旧版靠 `Upgrade` 表的 `Attributes`**：`0x2` 是 `OnlyDetect`（只检测、**不卸载**），`0x100`/`0x200` 才是版本区间端点是否含。写错成含 `OnlyDetect` 时：检测正常、安装成功、旧版本却原样留着（v1.1.0 的「升级后两条记录」就是这个原因，2026-10-13 已修）。
 
@@ -173,6 +174,7 @@ DotnetPublishTool_1.1.2_win-x64_framework-dependent.msi / .zip   # 体积小；�
 DotnetPublishTool_1.1.2_win-x64_self-contained.msi / .zip        # 自带运行时；体积大
 ```
 
+- **Release 正文按规范提交生成**：CI 调 `tools/make-release-notes.ps1`，把上一个 tag 到本 tag 之间的提交按 `feat` / `fix` / `docs`… 分组渲染（提交正文里的「- 说明」会作为子条目带出来），并附下载清单与 compare 链接；Release 已存在时正文也会被刷新。本地预览：`pwsh tools/make-release-notes.ps1 -Tag v1.1.2`。
 - 只想要包、不想建 Release：在 Actions 里手动 `Run workflow`（产物在该次运行的 Artifacts 里，保留 30 天）；勾上 `make_release` 才会建 Release。
 - 手动 / 离线出包仍然用上面的 `tools/make-installer.ps1`。
 

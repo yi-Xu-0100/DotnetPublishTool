@@ -45,6 +45,9 @@
 .PARAMETER SelfContained
   自包含发布（安装包自带 .NET 运行时）。
 
+.PARAMETER NoDesktopShortcut
+  安装包不创建桌面快捷方式（默认创建）。
+
 .PARAMETER NoShortcut
   不创建开始菜单快捷方式。
 
@@ -70,6 +73,7 @@ param(
     [string]$PublishDirectory,
     [switch]$SelfContained,
     [switch]$NoShortcut,
+    [switch]$NoDesktopShortcut,
     [switch]$SkipPublish
 )
 
@@ -136,6 +140,7 @@ $msiArgs = @(
 )
 if (-not [string]::IsNullOrWhiteSpace($UpgradeCode)) { $msiArgs += @('--msi-upgrade-code', $UpgradeCode) }
 if ($NoShortcut) { $msiArgs += '--no-msi-shortcut' }
+if ($NoDesktopShortcut) { $msiArgs += '--no-msi-desktop-shortcut' }
 
 & dotnet @msiArgs
 if ($LASTEXITCODE -ne 0) { throw "打包 MSI 失败（退出码 $LASTEXITCODE）。" }
