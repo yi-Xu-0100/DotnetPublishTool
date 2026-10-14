@@ -28,6 +28,9 @@ public sealed class MsiVersionService
     public string StatePath => _statePath ??= ResolveWritableStatePath();
 
     /// <summary>算出本次要用的新版本；未启用自动递增时返回 null（调用方沿用原版本）。</summary>
+    /// <summary>本机记录里这个项目上一次用的版本号（没记录过返回 null）。打包时用它提醒「版本号没变」。</summary>
+    public string? LastRecordedVersion(string projectPath) => ReadState(projectPath);
+
     public MsiVersionPlan? Resolve(MsiOptions msi, string projectPath, string? effectiveVersion)
     {
         if (!msi.AutoBumpVersion)

@@ -113,7 +113,7 @@ powershell -ExecutionPolicy Bypass -File .\tools\make-installer.ps1 -Version 1.2
 
 **必须在普通（非沙箱）终端运行**：沙箱里 `dotnet publish` 写不了项目的 `obj`，产物还会继承 Low 完整性标签（脚本自带检测，会直接拒绝）。
 
-**版本号就是「能不能升级」**：唯一来源是 [DotnetPublishTool.App.csproj](src/DotnetPublishTool.App/DotnetPublishTool.App.csproj) 里的 `<Version>`（当前 `1.2.0`），CI 与 `tools/make-installer.ps1` 都读它。升级代码由「发布者 + 产品名」稳定推导（要一直保持不变），产品码由「升级代码 + 版本」推导 —— 所以**同版本重装等于修复，换版本才是大版本升级**（先装新、再卸旧）。发新版就改这一处，然后打 `v<版本>` tag；tag 与 `<Version>` 不一致时 CI 会直接失败。
+**版本号就是「能不能升级」**：唯一来源是 [DotnetPublishTool.App.csproj](src/DotnetPublishTool.App/DotnetPublishTool.App.csproj) 里的 ``Version``（当前 `1.2.0`），CI 与 `tools/make-installer.ps1` 都读它。升级代码由「发布者 + 产品名」稳定推导（要一直保持不变）；**产品码每次打包新生成**，所以同一个版本号重打出来的包也能装：安装时会先卸旧、再装新（等价 WiX 的 `AllowSameVersionUpgrades`，升级范围上限含本版本、防降级那条不含本版本）。只有**同一个 .msi 文件连装两次**会走维护模式，那种情况在「程序和功能」里点「修复」即可。发新版就改 ``Version`` 这一处，然后打 `v<版本>` tag；tag 与 ``Version`` 不一致时 CI 会直接失败。
 
 **目标机要求**：框架依赖的产物要求目标机已装 **.NET 10 桌面运行时**（要自带运行时用 `-SelfContained`，体积大，且本机访问不到 NuGet 时会在还原阶段报 `NU1301`）。安装包不做代码签名，SmartScreen 会提示「未知发布者」。
 
@@ -127,10 +127,11 @@ powershell -ExecutionPolicy Bypass -File .\tools\make-installer.ps1 -Version 1.2
 - **升级时文件会不会被覆盖，取决于 File 表里的 `Version` 列**：这一列空着时 MSI 会把文件当成「无版本文件」，改用文件日期比较 —— 已装过的文件日期更新时就不覆盖（v1.1.0 的「装完还是旧程序」就是这个原因，已修）。
 - 升级行为（卸旧版 + 换文件）可以用 `tools/verify-msi-upgrade.ps1` 验：它会现场产出两个版本的包、用临时产品名装到临时目录、断言「旧版被卸掉、新版文件到位、程序和功能只剩一条」，跑完自动清理。**必须在管理员终端里跑**（每机器安装/卸载需要管理员权限）。
 - 加 `-ProbeVariants` 时脚本会跑**变体矩阵**：逐个改新版包 `Upgrade` 表的 `Attributes`（3 / 258 / 512 / 257 / 259），验证「带 `OnlyDetect(0x2)` 就只检测不卸载」这条因果 —— 这是排查「升级没卸旧版」最快的办法，每种变体各留一份日志。
-- **这些缺陷都在生成器里，不在某个项目的打包流程里**：修好一次，之后给任何项目打的包都带修复；**修复之前打的包（本仓库 v1.0.0 / v1.1.0，以及你用本工具打过的其它项目）都要用修好的版本重打一次**。另外三件属于「每个项目自己的约束」：每次发版把项目版本升上去（同版本重装 MSI 只会走维护模式）、载荷文件最好带版本资源、产品名/发布者不要改（升级码由它们推导）。
+- **这些缺陷都在生成器里，不在某个项目的打包流程里**：修好一次，之后给任何项目打的包都带修复；**修复之前打的包（本仓库 v1.0.0 / v1.1.0，以及你用本工具打过的其它项目）都要用修好的版本重打一次**。另外三件属于「每个项目自己的约束」：发出去的包每次递增版本号（同版本重装虽然能装上，但用户没法从版本号区分两次发布；打包时工具也会提醒）、载荷文件最好带版本资源、产品名/发布者不要改（升级码由它们推导）。
 - **桌面快捷方式**：默认与开始菜单一起创建（`Shortcut` 表两条；桌面那条挂在 `DesktopFolder` 上）。每机器安装时 `DesktopFolder` 解析成**公共桌面**（所有用户都看到），每用户安装时是当前用户桌面；卸载时一并移除。想要纯净安装用 `--no-msi-desktop-shortcut`（`tools/make-installer.ps1 -NoDesktopShortcut`）。
 - **每次打包都会自检**：卸旧版那行不能带 `OnlyDetect`、防降级那行必须在、`File.Version` 要与源文件对得上、`Error` / `LaunchCondition` 表不能空；不合格直接报错、不产出安装包。
-- **升级卸旧版靠 `Upgrade` 表的 `Attributes`**：`0x2` 是 `OnlyDetect`（只检测、**不卸载**），`0x100`/`0x200` 才是版本区间端点是否含。写错成含 `OnlyDetect` 时：检测正常、安装成功、旧版本却原样留着（v1.1.0 的「升级后两条记录」就是这个原因，2026-10-13 已修）。
+- **装到 Program Files 的写路径提醒**：产物里的 `NLog.config` 若用 ``${basedir}`` 或相对路径当**写路径**（`fileName` / `archiveFileName` / `internalLogFile`），打包时会警告 —— 普通用户对安装目录只有读权限，日志会全部丢失（NLog 默认静默失败；开了 `throwExceptions` 会直接启动不起来）。建议写路径改用 ``${specialfolder:folder=LocalApplicationData}`` 或 ``${environment:variable=LOCALAPPDATA}``，装到用户可写目录。LaserMotionCardMap 2.1.6 装完没日志就是这个原因（2026-10-14）。
+- **升级卸旧版靠 ``Upgrade`` 表的 ``Attributes``**：`0x2` 是 `OnlyDetect`（只检测、**不卸载**），`0x100`/`0x200` 是版本区间端点是否含。现在「卸旧版」那行是 `0x100|0x200`（=768，上限含本版本，同版本重装才卸得掉），防降级那行只有 `0x2`（下限不含本版本）。写错成含 `OnlyDetect` 时：检测正常、安装成功、旧版本却原样留着（v1.1.0 的「升级不卸旧版」就是这个原因，2026-10-13 定位）。
 
 ## 环境要求
 

@@ -59,9 +59,21 @@ public sealed class MsiPackageBuilder
     /// （UPGRADEFOUND 有值），RemoveExistingProducts 却什么都不做（2 毫秒空转）。2026-10-13 拿本机真实产品的
     /// Upgrade 表对照（它们用 256 / 258）才定位到。
     /// </summary>
-    private const int UpgradeAttributes = 0x0100;
+    private const int UpgradeAttributesVersionMinInclusive = 0x0100;
+    private const int UpgradeAttributesVersionMaxInclusive = 0x0200;
 
-    /// <summary>只检测、不卸载：用于「已经装了更新的版本」那条防降级记录。</summary>
+    /// <summary>
+    /// 「卸旧版」那一行：下限含 0.0.0、上限**含本版本**（2026-10-14 起加 0x0200）。
+    /// 配合「每次打包都生成新的产品码」，同一版本号重打出来的包会被当成「另一个产品」，
+    /// 安装时先卸旧再装新 —— 等价 WiX 的 AllowSameVersionUpgrades。上限若不含本版本，
+    /// 同版本的包就会被 Windows Installer 认作「已安装」：双击报 1638、静默则走维护模式什么都不装。
+    /// </summary>
+    private const int UpgradeAttributes = UpgradeAttributesVersionMinInclusive | UpgradeAttributesVersionMaxInclusive;
+
+    /// <summary>
+    /// 只检测、不卸载：用于「已经装了更新的版本」那条防降级记录。
+    /// 这一行**不带** VersionMinInclusive，下限因此是「不含」，同版本的新包不会触发它。
+    /// </summary>
     private const int UpgradeAttributesOnlyDetect = 0x0002;
 
     /// <summary>
@@ -213,7 +225,10 @@ public sealed class MsiPackageBuilder
         var upgradeCode = string.IsNullOrWhiteSpace(options.UpgradeCode)
             ? StableGuid.ToMsiString(StableGuid.From(manufacturer + "|" + productName))
             : StableGuid.Normalize(options.UpgradeCode!, "升级代码");
-        var productCode = StableGuid.ToMsiString(StableGuid.From(upgradeCode + "|" + version));
+        // 产品码每次打包新生成（产品身份靠 UpgradeCode 维系）：同一版本号重打出来的包就是「另一个产品」，
+        // 配合 Upgrade 表上限含本版本，装同版本会先卸旧再装新。组件 ID 只由 UpgradeCode + 相对路径推导，
+        // 仍然稳定，所以升级时文件会被正确替换。
+        var productCode = StableGuid.ToMsiString(Guid.NewGuid());
         // 摘要信息里的 Revision Number 必须是带花括号的 GUID（包码）——所有正常安装包都是这个格式。
         var packageCode = "{" + Guid.NewGuid().ToString("D").ToUpperInvariant() + "}";
         var installFolderName = PathLayout.Sanitize(productName);
@@ -244,6 +259,8 @@ public sealed class MsiPackageBuilder
             var directories = new DirectoryTable();
             var payload = StageFiles(sourceDirectory, stagingDirectory, sourceFiles, directories, warnings);
             cancellationToken.ThrowIfCancellationRequested();
+
+            InspectLogWritePaths(sourceDirectory, payload, warnings);
 
             log?.Report($"[MSI] 正在压缩 {payload.Count} 个文件…");
             CabinetBuilder.Create(stagingDirectory, CabinetStreamName, payload.Select(file => file.FileKey).ToList(), log);
@@ -327,6 +344,79 @@ public sealed class MsiPackageBuilder
             "INSERT INTO `Shortcut` (`Shortcut`,`Directory_`,`Name`,`Component_`,`Target`,`Arguments`,`Description`,`Hotkey`,`Icon_`,`IconIndex`,`ShowCmd`,`WkDir`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             shortcutKey, directoryKey, spec.ProductName, "c_" + targetFileKey,
             "[!" + targetFileKey + "]", null, spec.ProductName, null, null, null, null, InstallFolderKey);
+    }
+
+    /// <summary>
+    /// 体检：日志配置把**写路径**放在安装目录里就警告。装到 Program Files 后普通用户对该目录只有读权限，
+    /// NLog 建不了 logs、写不了日志，而且默认静默失败 —— 开了 throwExceptions 才会直接崩在启动阶段。
+    /// 只查写路径属性（fileName / archiveFileName / internalLogFile）：读路径、以及 ${specialfolder} 这类
+    /// 明确指向用户目录的 renderer 都不算问题，避免误报。
+    /// </summary>
+    private static void InspectLogWritePaths(string sourceDirectory, IReadOnlyList<PayloadFile> files, List<string> warnings)
+    {
+        var writeAttributes = new[] { "fileName", "archiveFileName", "internalLogFile" };
+        var basedirToken = "${basedir}";
+
+        foreach (var file in files)
+        {
+            var name = Path.GetFileName(file.RelativePath);
+            if (!string.Equals(name, "NLog.config", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(name, "nlog.config", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var fullPath = Path.Combine(sourceDirectory, file.RelativePath);
+            if (!File.Exists(fullPath))
+            {
+                continue;
+            }
+
+            System.Xml.Linq.XDocument document;
+            try
+            {
+                document = System.Xml.Linq.XDocument.Load(fullPath);
+            }
+            catch (Exception ex) when (ex is System.Xml.XmlException || ex is IOException || ex is UnauthorizedAccessException)
+            {
+                continue;
+            }
+
+            var hits = new List<string>();
+            foreach (var element in document.Descendants())
+            {
+                foreach (var attribute in element.Attributes())
+                {
+                    if (!writeAttributes.Contains(attribute.Name.LocalName, StringComparer.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    var value = attribute.Value.Trim();
+                    if (value.Length == 0)
+                    {
+                        continue;
+                    }
+
+                    if (value.IndexOf(basedirToken, StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        hits.Add(attribute.Name.LocalName + "=" + value);
+                    }
+                    else if (!value.StartsWith("${", StringComparison.Ordinal) && !Path.IsPathRooted(value))
+                    {
+                        hits.Add(attribute.Name.LocalName + "=" + value);
+                    }
+                }
+            }
+
+            if (hits.Count > 0)
+            {
+                warnings.Add("发布产物里的 " + name + " 把日志写在安装目录里（" + string.Join("；", hits.Distinct()) + "）："
+                    + "本安装包装到 Program Files 后，普通用户对该目录只有读权限，日志会全部丢失（NLog 默认静默失败，"
+                    + "开了 throwExceptions 会直接启动不起来）。建议把写路径改成用户可写目录，例如 "
+                    + "${specialfolder:folder=LocalApplicationData}/<产品名>/logs/… 或 ${environment:variable=LOCALAPPDATA}/…。");
+            }
+        }
     }
 
     /// <summary>要建快捷方式时取出启动程序在 File 表里的键；产物里没有 exe 就退掉并记一条警告。</summary>
@@ -423,6 +513,12 @@ public sealed class MsiPackageBuilder
         foreach (var row in removalRows)
         {
             int.TryParse(row[1], out var attributes);
+            if ((attributes & UpgradeAttributesVersionMaxInclusive) == 0 && !diagnosticOverride)
+            {
+                problems.Add("卸载旧版本那一行的 Attributes 少了 VersionMaxInclusive(0x0200)（值 " + row[1]
+                    + "）：同一版本号重打出来的包装不上（会走维护模式），旧版本也卸不掉");
+            }
+
             if ((attributes & UpgradeAttributesOnlyDetect) == 0)
             {
                 continue;
@@ -613,15 +709,15 @@ public sealed class MsiPackageBuilder
             1, sequence, null, "#" + CabinetStreamName, null, null);
 
         // 1) 卸载旧版本：范围 [0.0.0, 本版本)（上限不含，正好不会匹配到自己）。
-        //    Attributes 必须是 VersionMinInclusive，**不能带 OnlyDetect**，否则只检测不卸载。
+        //    Attributes 必须带上限含本版本（0x0200）且**不能带 OnlyDetect**，否则同版本重装的包卸载不掉。
         database.Insert(
             "INSERT INTO `Upgrade` (`UpgradeCode`,`VersionMin`,`VersionMax`,`Language`,`Attributes`,`Remove`,`ActionProperty`) VALUES (?,?,?,?,?,?,?)",
             spec.UpgradeCode, "0.0.0", spec.ProductVersion, null, ResolveUpgradeAttributes(), null, UpgradeFoundProperty);
 
-        // 2) 防降级：装了比本包更新的版本时给明确提示，而不是静默走维护模式什么都不做（OnlyDetect 只检测）。
+        // 2) 防降级：装了比本包**更新**的版本时给明确提示；只有 OnlyDetect，下限不含本版本，同版本不会触发。
         database.Insert(
             "INSERT INTO `Upgrade` (`UpgradeCode`,`VersionMin`,`VersionMax`,`Language`,`Attributes`,`Remove`,`ActionProperty`) VALUES (?,?,?,?,?,?,?)",
-            spec.UpgradeCode, spec.ProductVersion, null, null, UpgradeAttributes | UpgradeAttributesOnlyDetect, null, NewerVersionFoundProperty);
+            spec.UpgradeCode, spec.ProductVersion, null, null, UpgradeAttributesOnlyDetect, null, NewerVersionFoundProperty);
 
         database.Insert(
             "INSERT INTO `LaunchCondition` (`Condition`,`Description`) VALUES (?,?)",

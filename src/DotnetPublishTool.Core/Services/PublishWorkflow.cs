@@ -193,6 +193,25 @@ public sealed class PublishWorkflow
                 : Path.GetFullPath(msi.OutputDirectory!);
 
             var productName = string.IsNullOrWhiteSpace(msi.ProductName) ? request.Project.Name : msi.ProductName!.Trim();
+
+            // 版本号没变、又往同一个目录打：会覆盖同名包，而且用户没法从版本号区分两次发布 —— 提醒一次。
+            // 同版本重装本身从 1.2.1 起是能装上的（新产品码 + 升级范围含本版本），所以这里只是建议而非错误。
+            // 版本号口径必须与生成器一致：生成器用的是 ProductVersion（没给才回落到项目版本），
+            // 拿 msi.Version 算文件名会算错，这里专门对齐（2026-10-14 实测踩到）。
+            var effectiveMsiVersion = string.IsNullOrWhiteSpace(msi.ProductVersion) ? msi.Version : msi.ProductVersion!.Trim();
+            var targetMsiPath = Path.Combine(
+                msiDirectory,
+                ZipNaming.Resolve(msi.NamingMode, msi.DateFormat, msi.CustomName, effectiveMsiVersion, productName, ".msi"));
+            var previousVersion = _versionService.LastRecordedVersion(request.Project.Path);
+            var sameNameExists = File.Exists(targetMsiPath);
+            var sameAsRecorded = !string.IsNullOrWhiteSpace(previousVersion)
+                && string.Equals(previousVersion, effectiveMsiVersion, StringComparison.OrdinalIgnoreCase);
+            if (sameNameExists || sameAsRecorded)
+            {
+                var reason = sameNameExists ? "输出目录里已有同名安装包，会被覆盖" : "和本机记录的上一版相同";
+                log?.Report($"[MSI][提醒] 这次打的版本号还是 {effectiveMsiVersion}（{reason}）：同版本重装能装上（会先卸旧再装新），"
+                    + "但发出去的包最好每次递增版本号 —— 否则用户没法从版本号区分两次发布。");
+            }
             log?.Report($"[MSI] 正在生成安装包（{productName}，安装到 Program Files）…");
             try
             {
