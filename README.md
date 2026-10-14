@@ -142,6 +142,8 @@ powershell -ExecutionPolicy Bypass -File .\tools\make-installer.ps1 -Version 1.2
 
 ```powershell
 dotnet build DotnetPublishTool.slnx
+
+> 应用图标（窗口、任务栏、安装包快捷方式都用它）由 `tools/make-app-icon.ps1` 生成：脚本自己画图 + 组装 16/20/24/32/40/48/64/128/256 九个尺寸的 `src/DotnetPublishTool.App/app.ico`。想换样式改脚本里的图形段，跑一次即可（`-Preview` 会顺带出一张各尺寸并排的预览图）。
 dotnet run --project src/DotnetPublishTool.App
 ```
 

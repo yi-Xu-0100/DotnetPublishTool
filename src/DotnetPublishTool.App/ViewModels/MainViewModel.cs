@@ -152,6 +152,26 @@ public sealed class MainViewModel : ObservableObject
 
     public RelayCommand SaveProfileCommand { get; }
 
+    /// <summary>标题栏文案：带版本号，方便一眼确认手上装的是哪个版本（发版排查也用得上）。</summary>
+    public string WindowTitle { get; } = BuildWindowTitle();
+
+    private static string BuildWindowTitle()
+    {
+        var assembly = typeof(MainViewModel).Assembly;
+        var version = (assembly
+                .GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
+                .FirstOrDefault() as System.Reflection.AssemblyInformationalVersionAttribute)?.InformationalVersion
+            ?? assembly.GetName().Version?.ToString()
+            ?? "未知";
+        var plus = version.IndexOf('+');
+        if (plus >= 0)
+        {
+            version = version[..plus];
+        }
+
+        return "Dotnet 发布工具 " + version;
+    }
+
     public RelayCommand OpenProjectFolderCommand { get; }
 
     public RelayCommand OpenOutputFolderCommand { get; }
@@ -754,7 +774,7 @@ public sealed class MainViewModel : ObservableObject
         ClearRecentProjectsCommand.RaiseCanExecuteChanged();
 
         var integrity = ProcessIntegrity.GetCurrent();
-        AppendLog("[环境] 进程完整性级别：" + ProcessIntegrity.Describe(integrity));
+        AppendLog("[环境] 工具版本：" + WindowTitle + "；进程完整性级别：" + ProcessIntegrity.Describe(integrity));
         if (ProcessIntegrity.IsBelowMedium)
         {
             AppendLog("[环境] 低完整性进程写不了「文档」「%APPDATA%」等目录。");
