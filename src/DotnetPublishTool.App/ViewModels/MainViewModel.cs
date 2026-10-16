@@ -66,6 +66,10 @@ public sealed class MainViewModel : ObservableObject
     private ZipNamingMode _msiNamingMode = ZipNamingMode.ProjectNameVersion;
     private string _msiCustomName = string.Empty;
     private bool _msiAutoBumpVersion;
+    private bool _msiAutoBumpVersionOnce;
+
+    /// <summary>常用设置/发布配置当前是为哪个项目加载的（同一个项目刷新时不要重载）。</summary>
+    private string? _profilesLoadedFor;
     private bool _msiWriteVersionBack = true;
 
     private string _profilePreviewXml = string.Empty;
@@ -203,16 +207,34 @@ public sealed class MainViewModel : ObservableObject
             OnPropertyChanged(nameof(MsiPathPreview));
             OnPropertyChanged(nameof(MsiVersionPreview));
 
-            TargetFrameworks.Clear();
-            if (value is not null)
+            // 项目被「置空」只可能是列表刷新 / 绑定回写造成的中间态（发布后的版本刷新会替换项目列表项，
+            // 列表的绑定随即把 SelectedProject 回写成 null）。这种情况**什么都不能做**：
+            // 曾经在这里清空 TargetFrameworks（目标框架下拉的**选项**）并清掉发布配置列表，而刷新收尾是用
+            // 字段直接赋值的、不会走回 setter 填回来 —— 于是"选项消失"。
+            // 2026-10-16 由 NLog 日志依次定位到「配置选择丢失」「目标框架选项丢失」，根因都是这一处。
+            if (value is null)
             {
-                foreach (var framework in value.TargetFrameworks)
-                {
-                    TargetFrameworks.Add(framework);
-                }
+                AppendLog("[诊断] 项目选择被清空（中间态），忽略：不动目标框架选项、配置列表与常用设置。");
+                RaiseCommandStates();
+                return;
             }
 
-            LoadProfilesFor(value);
+            // 同一个项目只是「重新探查」回来（例如版本递增后刷新 ProjectInfo）时不要重载发布配置：
+            // 重载会先把常用设置清成兜底值，而配置下拉框在集合刷新后还会把「空选择」回写进 SelectedProfile，
+            // 最终把用户填的运行时标识符 / 目标框架悄悄清掉（2026-10-16 定位：第二次打包 MSI 从 60MB 变 212MB）。
+            TargetFrameworks.Clear();
+            foreach (var framework in value.TargetFrameworks)
+            {
+                TargetFrameworks.Add(framework);
+            }
+
+            AppendLog("[诊断] 项目选择变更：" + value.Path);
+            if (!string.Equals(_profilesLoadedFor, value.Path, StringComparison.OrdinalIgnoreCase))
+            {
+                _profilesLoadedFor = value.Path;
+                LoadProfilesFor(value);
+            }
+
             RaiseCommandStates();
         }
     }
@@ -254,6 +276,13 @@ public sealed class MainViewModel : ObservableObject
         get => _selectedProfile;
         set
         {
+            if (value is null && Profiles.Count > 0)
+            {
+                // 集合刷新（重新扫描 / 重载配置）后下拉框会把「空选择」回写进来。这不是用户的选择：
+                // 放行会把常用设置清成兜底值，打包内容随之悄悄改变 —— 直接忽略。
+                return;
+            }
+
             if (!SetProperty(ref _selectedProfile, value))
             {
                 return;
@@ -525,6 +554,26 @@ public sealed class MainViewModel : ObservableObject
 
     public bool IsMsiCustomNaming => MsiNamingMode == ZipNamingMode.Custom;
 
+    /// <summary>
+    /// 仅本次递增版本：只对接下来这一次打包生效，**打包成功后自动取消**，也不写进设置（重启即复位）。
+    /// 适合「这次想发个新版本，但不想以后每次都自动升」的场景。
+    /// </summary>
+    public bool MsiAutoBumpVersionOnce
+    {
+        get => _msiAutoBumpVersionOnce;
+        set
+        {
+            if (SetProperty(ref _msiAutoBumpVersionOnce, value))
+            {
+                OnPropertyChanged(nameof(IsAutoBumpEnabled));
+                RebuildPreview();
+            }
+        }
+    }
+
+    /// <summary>这次打包到底要不要递增：常驻开关或「仅本次」任一勾上即可。</summary>
+    public bool IsAutoBumpEnabled => MsiAutoBumpVersion || MsiAutoBumpVersionOnce;
+
     /// <summary>打包 MSI 时自动把版本递增一位。</summary>
     public bool MsiAutoBumpVersion
     {
@@ -533,6 +582,7 @@ public sealed class MainViewModel : ObservableObject
         {
             if (SetProperty(ref _msiAutoBumpVersion, value))
             {
+                OnPropertyChanged(nameof(IsAutoBumpEnabled));
                 RebuildPreview();
             }
         }
@@ -666,13 +716,14 @@ public sealed class MainViewModel : ObservableObject
                 return "本次版本：无法确定 —— " + (reason ?? "项目里没有版本号");
             }
 
-            if (!MsiAutoBumpVersion)
+            if (!IsAutoBumpEnabled)
             {
                 return "本次版本：" + version + "（未启用自动递增）";
             }
 
             var where = MsiWriteVersionBack ? "并写回项目 csproj" : "只用于本次打包";
-            return "本次版本：" + version + "（自动递增，基准 " + (baseVersion ?? "未知") + "，" + where + "）";
+            var scope = MsiAutoBumpVersionOnce && !MsiAutoBumpVersion ? "仅本次，" : string.Empty;
+            return "本次版本：" + version + "（自动递增，" + scope + "基准 " + (baseVersion ?? "未知") + "，" + where + "）";
         }
     }
 
@@ -688,7 +739,7 @@ public sealed class MainViewModel : ObservableObject
         }
 
         var projectVersion = NullIfEmpty(VersionOverride) ?? project.Version;
-        if (!MsiAutoBumpVersion)
+        if (!IsAutoBumpEnabled)
         {
             baseVersion = projectVersion;
             return projectVersion;
@@ -775,6 +826,17 @@ public sealed class MainViewModel : ObservableObject
 
         var integrity = ProcessIntegrity.GetCurrent();
         AppendLog("[环境] 工具版本：" + WindowTitle + "；进程完整性级别：" + ProcessIntegrity.Describe(integrity));
+
+        // 日志文件位置（NLog）：排查现场问题时让用户一眼知道去哪拿日志；写不进去也在这里说清楚。
+        if (App.LogProblem is null)
+        {
+            AppendLog("[环境] 工具日志：" + Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DotnetPublishTool", "logs"));
+        }
+        else
+        {
+            AppendLog("[提示] " + App.LogProblem);
+        }
         if (ProcessIntegrity.IsBelowMedium)
         {
             AppendLog("[环境] 低完整性进程写不了「文档」「%APPDATA%」等目录。");
@@ -807,11 +869,13 @@ public sealed class MainViewModel : ObservableObject
         {
             IsBusy = true;
             StatusText = "正在解析项目…";
-            Projects.Clear();
-            Profiles.Clear();
-            ExtraProperties.Clear();
-            SelectedProject = null;
-            SelectedProfile = null;
+            // 先解析、成功后再替换界面状态：解析中途失败（例如项目文件被占用）时，已有的项目与
+            // 发布配置必须原样保留。以前是「先清空再解析」，一旦这一步抛异常，项目和配置列表会一起
+            // 空掉且再也回不来（2026-10-16 实测：发布后重新扫描，FolderProfile 直接消失）。
+            ProjectInfo? primary = null;
+            var loaded = new List<ProjectInfo>();
+            string? loadedPath = null;
+            string readyStatus;
 
             if (ProjectInspector.IsSolutionFile(path))
             {
@@ -823,30 +887,46 @@ public sealed class MainViewModel : ObservableObject
                     return;
                 }
 
-                ProjectPath = Path.GetFullPath(path);
+                loadedPath = Path.GetFullPath(path);
                 foreach (var projectPath in projectPaths)
                 {
-                    Projects.Add(await _inspector.InspectAsync(projectPath, ProjectPath).ConfigureAwait(true));
+                    loaded.Add(await _inspector.InspectAsync(projectPath, loadedPath).ConfigureAwait(true));
                 }
 
-                SelectedProject = Projects.FirstOrDefault();
-                StatusText = $"已从解决方案载入 {Projects.Count} 个项目。";
-                RecordRecent(ProjectPath);
+                primary = loaded.FirstOrDefault();
+                readyStatus = $"已从解决方案载入 {loaded.Count} 个项目。";
             }
             else if (ProjectInspector.IsProjectFile(path))
             {
                 var project = await _inspector.InspectAsync(path).ConfigureAwait(true);
-                ProjectPath = project.Path;
-                Projects.Add(project);
-                SelectedProject = project;
-                StatusText = "已载入项目：" + project.Name;
-                RecordRecent(project.Path);
+                loadedPath = project.Path;
+                loaded.Add(project);
+                primary = project;
+                readyStatus = "已载入项目：" + project.Name;
             }
             else
             {
                 _dialogs.ShowError("请选择 .csproj / .vbproj / .fsproj 项目文件，或 .sln / .slnx 解决方案文件。");
                 StatusText = "文件类型不支持。";
+                return;
             }
+
+            // 解析成功，才一次性替换界面状态（先置空再选上：置空会让发布配置按新项目重新载入）
+            Projects.Clear();
+            Profiles.Clear();
+            ExtraProperties.Clear();
+            SelectedProject = null;
+            SelectedProfile = null;
+            foreach (var item in loaded)
+            {
+                Projects.Add(item);
+            }
+
+            ProjectPath = loadedPath!;
+            _profilesLoadedFor = null;   // 显式载入（含重新扫描）要强制重载配置，同一项目也不例外
+            SelectedProject = primary;
+            StatusText = readyStatus;
+            RecordRecent(loadedPath!);
         }
         catch (Exception ex)
         {
@@ -941,7 +1021,8 @@ public sealed class MainViewModel : ObservableObject
 
         try
         {
-            var progress = new Progress<string>(AppendLog);
+            // 用 lambda 包一层：AppendLog 带 [CallerFilePath]/[CallerLineNumber] 可选参数，方法组无法直接转成 Action<string>。
+            var progress = new Progress<string>(line => AppendLog(line));
             var result = await _workflow.RunAsync(request, progress, _cancellation.Token).ConfigureAwait(true);
 
             if (result.Success)
@@ -964,6 +1045,13 @@ public sealed class MainViewModel : ObservableObject
                 if (result.BumpedVersion is not null)
                 {
                     StatusText += " 本次版本：" + result.BumpedVersion + "。";
+                    if (MsiAutoBumpVersionOnce)
+                    {
+                        // 「仅本次递增」用完即关：避免下次打包又悄悄升一版。
+                        MsiAutoBumpVersionOnce = false;
+                        AppendLog("[MSI] 仅本次递增已生效，选项已自动取消。");
+                    }
+
                     // 写回只改了磁盘上的 csproj：这里定点刷新一下界面上显示的项目版本。
                     await RefreshSelectedProjectAsync().ConfigureAwait(true);
                 }
@@ -1132,11 +1220,15 @@ public sealed class MainViewModel : ObservableObject
 
     private void LoadProfilesFor(ProjectInfo? project)
     {
+        var previousProfileName = _selectedProfile?.Name;
+        AppendLog("[诊断] 重新载入发布配置（项目：" + (project?.Name ?? "无") + "，原选择：" + (previousProfileName ?? "无") + "）。");
         Profiles.Clear();
 
         if (project is null)
         {
-            ApplyProfile(null);
+            // 项目暂时为空（列表刷新的中间态）：配置列表与常用设置**都保持不动**。
+            // 真正换项目时，新项目的 LoadProfilesFor(project) 会清空并重新填充它们。
+            AppendLog("[诊断] 重新载入发布配置被跳过（项目为空）。");
             return;
         }
 
@@ -1150,12 +1242,26 @@ public sealed class MainViewModel : ObservableObject
             AppendLog("[提示] " + project.EvaluationWarning);
         }
 
-        SelectedProfile = Profiles.FirstOrDefault();
+        SelectedProfile = Profiles.FirstOrDefault(p => string.Equals(p.Name, previousProfileName, StringComparison.OrdinalIgnoreCase))
+            ?? Profiles.FirstOrDefault();
     }
 
     private void ApplyProfile(PublishProfile? profile)
     {
         var project = SelectedProject;
+        var previousRuntime = _runtimeIdentifier;
+
+        // 空配置**一律**只保留现有常用设置，绝不清理它们。项目列表/配置列表刷新过程中会短暂出现
+        // 「项目为空」或「配置为空」的中间态，而这些中间态没有语义 —— 以前把它们当成「清空设置」，
+        // 结果运行时标识符 / 目标框架被静默清成兜底值，打包内容随之改变（2026-10-16 两次踩到：
+        // 一次是列表刷新期间的空选择，一次是发布成功后项目瞬时空掉）。
+        // 现在只有「真正应用某个配置」才会写这些字段；换项目时新项目的配置会覆盖它们。
+        if (profile is null)
+        {
+            AppendLog("[诊断] 收到空配置，已保留当前常用设置（不清空）。");
+            RebuildPreview();
+            return;
+        }
 
         _configuration = profile?.GetValue("Configuration") ?? "Release";
         _targetFramework = profile?.GetValue("TargetFramework")
@@ -1186,6 +1292,13 @@ public sealed class MainViewModel : ObservableObject
         OnPropertyChanged(nameof(PublishTrimmed));
         OnPropertyChanged(nameof(EnvironmentName));
         OnPropertyChanged(nameof(VersionOverride));
+
+        if (!string.IsNullOrWhiteSpace(previousRuntime) && string.IsNullOrWhiteSpace(_runtimeIdentifier))
+        {
+            AppendLog("[提示] 运行时标识符被重置为空（发布配置没有生效）：这次发布会与平台无关，"
+                + "各平台原生库可能被打进安装包、体积大好几倍，请到「常用设置 → 运行时标识符」填 win-x64。");
+        }
+
         RebuildPreview();
     }
 
@@ -1229,7 +1342,7 @@ public sealed class MainViewModel : ObservableObject
             Manufacturer = NullIfEmpty(MsiManufacturer),
             CreateShortcut = MsiCreateShortcut,
             CreateDesktopShortcut = MsiCreateDesktopShortcut,
-            AutoBumpVersion = MsiAutoBumpVersion,
+            AutoBumpVersion = IsAutoBumpEnabled,
             WriteVersionBack = MsiWriteVersionBack,
             NamingMode = MsiNamingMode,
             CustomName = NullIfEmpty(MsiCustomName),
@@ -1482,10 +1595,48 @@ public sealed class MainViewModel : ObservableObject
         OpenOutputFolderCommand.RaiseCanExecuteChanged();
         CancelCommand.RaiseCanExecuteChanged();
         PublishCommand.RaiseCanExecuteChanged();
+        CheckUiStateConsistency();
     }
 
-    private void AppendLog(string line)
+    private bool _warnedEmptyProfiles;
+    private bool _warnedEmptyFrameworks;
+
+    /// <summary>
+    /// 界面状态自检：已经选中项目时，绑定的列表不该是空的。
+    /// 2026-10-16 连着被咬三次（常用设置被清空、发布配置列表被清空、目标框架选项被清空），
+    /// 根因都是「瞬时空项目」把集合清了却没人填回来 —— 以后同类问题由这里自己报出来。
+    /// </summary>
+    private void CheckUiStateConsistency()
     {
+        if (SelectedProject is null)
+        {
+            _warnedEmptyProfiles = false;
+            _warnedEmptyFrameworks = false;
+            return;
+        }
+
+        if (!_warnedEmptyProfiles && Profiles.Count == 0)
+        {
+            _warnedEmptyProfiles = true;
+            AppendLog("[提示] 界面状态异常：已选中项目，但「发布配置」列表为空（可能是刷新过程中被清空且未重新填充）。");
+        }
+
+        if (!_warnedEmptyFrameworks && TargetFrameworks.Count == 0 && SelectedProject.TargetFrameworks.Count > 0)
+        {
+            _warnedEmptyFrameworks = true;
+            AppendLog("[提示] 界面状态异常：已选中项目，但「目标框架」下拉没有选项（可能是刷新过程中被清空且未重新填充）。");
+        }
+    }
+
+    private static readonly NLog.Logger FileLog = NLog.LogManager.GetLogger("UI");
+
+    private void AppendLog(
+        string line,
+        [System.Runtime.CompilerServices.CallerFilePath] string callerFile = "",
+        [System.Runtime.CompilerServices.CallerLineNumber] int callerLine = 0)
+    {
+        WriteLogFile(line, callerFile, callerLine);
+
         string snapshot;
         lock (_logLock)
         {
@@ -1494,6 +1645,36 @@ public sealed class MainViewModel : ObservableObject
         }
 
         LogText = snapshot;
+    }
+
+    /// <summary>
+    /// 界面日志同时落盘，并按内容判断等级：错误/失败 → Error，提醒/提示 → Warn，诊断 → Debug，其余 Info。
+    /// 想看（或不看）[诊断] 这类细节，改 NLog.config 里的 minlevel 即可，不用改代码。
+    /// </summary>
+    private static void WriteLogFile(string line, string callerFile, int callerLine)
+    {
+        var level = NLog.LogLevel.Info;
+        if (line.Contains("[错误]", StringComparison.Ordinal) || line.Contains("失败", StringComparison.Ordinal))
+        {
+            level = NLog.LogLevel.Error;
+        }
+        else if (line.Contains("[提醒]", StringComparison.Ordinal) || line.Contains("[提示]", StringComparison.Ordinal))
+        {
+            level = NLog.LogLevel.Warn;
+        }
+        else if (line.Contains("[诊断]", StringComparison.Ordinal))
+        {
+            level = NLog.LogLevel.Debug;
+        }
+
+        // 把真实调用点带上：否则日志里的"调用点"只会显示到这个写日志的小函数本身，排查时看不出出处。
+        var logEvent = new NLog.LogEventInfo(level, FileLog.Name, line);
+        if (!string.IsNullOrEmpty(callerFile))
+        {
+            logEvent.SetCallerInfo(null, null, callerFile, callerLine);
+        }
+
+        FileLog.Log(logEvent);
     }
 
     private static string? NullIfEmpty(string? value) =>

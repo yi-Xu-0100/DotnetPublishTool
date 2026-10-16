@@ -21,6 +21,14 @@
 
   <ItemGroup>
     <ProjectReference Include="..\DotnetPublishTool.Core\DotnetPublishTool.Core.csproj" />
+
+    <!-- 工具自身日志：落盘 + 轮转 + 分级，配置见 NLog.config（写在用户可写目录，装到 Program Files 也不受影响）。
+         这里用 Content + CopyToOutputDirectory —— 与 LaserMotionCardMap 的引入方式一致；
+         只用 <None Update> 时该文件不会被复制到输出/发布目录（实测：输出里只有 NLog.dll，NLog 等于无配置运行）。 -->
+    <PackageReference Include="NLog" Version="6.2.0" />
+    <Content Include="NLog.config">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
   </ItemGroup>
 
 </Project>
