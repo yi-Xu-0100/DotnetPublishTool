@@ -108,6 +108,16 @@ public sealed class PublishWorkflow
         log?.Report("[配置] 已把本次生效的发布配置写入：" + saved.ProfilePath);
         log?.Report("[输出] 发布目录：" + saved.PublishDirectory);
 
+        // 勾了生成 MSI、却没指定运行时标识符：发布变成「与平台无关」，NuGet 包里各平台的原生库
+        // （runtimes/**、*.so / *.dylib / *.aar / *.xcframework.zip）会被整套抄进产物，安装包体积翻数倍。
+        // 2026-10-16 实测：没填 RID 时发布目录 86 个文件 / 370 MB，MSI 212 MB；填 win-x64 后是 60 MB。
+        if (request.Msi is { Enabled: true } && string.IsNullOrWhiteSpace(request.Options.RuntimeIdentifier))
+        {
+            log?.Report("[提醒] 勾了生成 MSI，但「运行时标识符」是空的：这次的发布会与平台无关，NuGet 包里各平台的原生库"
+                + "（runtimes/**、*.so、*.dylib、*.aar、*.xcframework.zip）都可能被抄进发布产物 —— 安装包会大好几倍。"
+                + "建议到「常用设置 → 运行时标识符」填 win-x64 再打包。");
+        }
+
         var protocol = request.ExtraProperties
             .FirstOrDefault(p => string.Equals(p.Key, "PublishProtocol", StringComparison.OrdinalIgnoreCase))?.Value;
         if (!string.IsNullOrWhiteSpace(protocol) && !protocol.Equals("FileSystem", StringComparison.OrdinalIgnoreCase))
