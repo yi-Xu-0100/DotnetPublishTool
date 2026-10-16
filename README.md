@@ -80,6 +80,7 @@ msiexec /a SampleConsoleApp_1.4.2.msi /qn TARGETDIR=D:\image\   # 管理安装�
 | 安装版本 | 取「版本覆盖」或项目版本，按 MSI 规则规整成 `x.y.z`（不合法时用 `1.0.0`） |
 | 创建开始菜单快捷方式 | 关掉则只安装文件 |
 | 打包时自动递增版本 | 每次生成 MSI 前把版本递增一位：1.4.2 → 1.4.3、2.1.2.0 → 2.1.3.0（1.4 → 1.5；1.4.65534 → 1.5.0）。基准取「版本覆盖」或项目版本（四个版本键里最大的那个），也会跟本机记录的上次版本取较大者 |
+- **「仅本次递增」**：勾上只对接下来这一次打包生效，**打包成功后自动取消**，并且不写进设置（重启即复位）—— 适合「这次想发个新版本，但不想以后每次都自动升」。它和常驻的「打包时自动递增版本」取或：任一勾上就会递增，「并把新版本写回项目 csproj」也随这个合并状态启用。
 | 并把新版本写回项目 csproj | 勾选时把新版本写回项目 `<Version>`（**本工具唯一会改动源文件的地方**，写前把原文件备份到输出目录的 `csproj-backup`，保留最近 5 份）；关掉则新版本只作用于本次打包 |
 
 **升级**：升级代码由「发布者 + 产品名」稳定推导（也可用 `UpgradeCode` 固定）。只要这两项不变，装新版本时安装包会先卸掉旧版本，不会在「程序和功能」里留下多条。
@@ -131,6 +132,7 @@ powershell -ExecutionPolicy Bypass -File .\tools\make-installer.ps1 -Version 1.3
 - **桌面快捷方式**：默认与开始菜单一起创建（`Shortcut` 表两条；桌面那条挂在 `DesktopFolder` 上）。每机器安装时 `DesktopFolder` 解析成**公共桌面**（所有用户都看到），每用户安装时是当前用户桌面；卸载时一并移除。想要纯净安装用 `--no-msi-desktop-shortcut`（`tools/make-installer.ps1 -NoDesktopShortcut`）。
 - **每次打包都会自检**：卸旧版那行不能带 `OnlyDetect`、防降级那行必须在、`File.Version` 要与源文件对得上、`Error` / `LaunchCondition` 表不能空；不合格直接报错、不产出安装包。
 - **装到 Program Files 的写路径提醒**：产物里的 `NLog.config` 若用 ``${basedir}`` 或相对路径当**写路径**（`fileName` / `archiveFileName` / `internalLogFile`），打包时会警告 —— 普通用户对安装目录只有读权限，日志会全部丢失（NLog 默认静默失败；开了 `throwExceptions` 会直接启动不起来）。建议写路径改用 ``${specialfolder:folder=LocalApplicationData}`` 或 ``${environment:variable=LOCALAPPDATA}``，装到用户可写目录。LaserMotionCardMap 2.1.6 装完没日志就是这个原因（2026-10-14）。
+- **打包 MSI 前把「运行时标识符」填成 `win-x64`**：留空时 `dotnet publish` 会变成与平台无关的发布，NuGet 包里各平台的原生库（`runtimes/**`、`*.so`、`*.dylib`、`*.aar`、`*.xcframework.zip`）会**整套**被抄进发布产物，安装包体积翻数倍（实测 86 个文件 / 370 MB → MSI 212 MB；填 `win-x64` 后是 60 MB）。现在勾了生成 MSI 却没填 RID 时，发布开始就会在日志里警告。
 - **升级卸旧版靠 ``Upgrade`` 表的 ``Attributes``**：`0x2` 是 `OnlyDetect`（只检测、**不卸载**），`0x100`/`0x200` 是版本区间端点是否含。现在「卸旧版」那行是 `0x100|0x200`（=768，上限含本版本，同版本重装才卸得掉），防降级那行只有 `0x2`（下限不含本版本）。写错成含 `OnlyDetect` 时：检测正常、安装成功、旧版本却原样留着（v1.1.0 的「升级不卸旧版」就是这个原因，2026-10-13 定位）。
 
 ## 环境要求
@@ -144,6 +146,15 @@ powershell -ExecutionPolicy Bypass -File .\tools\make-installer.ps1 -Version 1.3
 dotnet build DotnetPublishTool.slnx
 
 > 应用图标（窗口、任务栏、安装包快捷方式都用它）由 `tools/make-app-icon.ps1` 生成：脚本自己画图 + 组装 16/20/24/32/40/48/64/128/256 九个尺寸的 `src/DotnetPublishTool.App/app.ico`。想换样式改脚本里的图形段，跑一次即可（`-Preview` 会顺带出一张各尺寸并排的预览图）。
+
+### 工具自身日志（NLog）
+
+- **位置**：`%LOCALAPPDATA%\DotnetPublishTool\logs\`（启动后的第一条日志里也会打印一次）。**不写安装目录** —— 装到 Program Files 后那里对普通用户只读。
+- **文件**（按等级分工，结构与 LaserMotionCardMap 的 NLog.config 一致）：`tool-<日期>.log` 收 Info 及以上；`debug/logfile.log` 单独收 Debug（含 `[诊断]`，免得把常规日志刷满）；`error/logfile.log` 再抄一份 Warn/Error，便于现场直接看这份。每条日志带调用点（文件:行）。
+- **轮转**：按天 + 单文件 5MB（错误日志 2MB）切分，归档用 `archiveNumbering="DateAndSequence"`，最多 60 份 / 保留 30 天（debug 14 天）。不套 `AsyncWrapper` —— 崩溃时最后几行正是要看的，异步队列会丢。
+- **等级**：默认 `Debug` 起（含 `[诊断]` 这类排查细节）；只想看常规信息，把 [NLog.config](src/DotnetPublishTool.App/NLog.config) 里的 `minlevel` 改成 `Info` 即可，不用改代码。界面日志按内容自动分级：错误/失败 → Error，提醒/提示 → Warn，诊断 → Debug，其余 Info。
+- **写不进去时不会静默**：启动会探一次日志目录，失败就以 `[提示]` 显示在日志面板里（NLog 本身是静默失败的）。
+- 未处理异常（界面线程 / 后台线程 / 未观察的 Task）都会落盘，所以"莫名其妙崩了"至少能留下原因。
 dotnet run --project src/DotnetPublishTool.App
 ```
 

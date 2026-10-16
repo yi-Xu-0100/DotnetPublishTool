@@ -24,6 +24,7 @@ WPF 图形化的 dotnet 发布/打包工具：选项目 → 找发布配置 → 
 - MSI 版本自动递增 / 写回项目：`src/DotnetPublishTool.Core/Services/MsiVersionService.cs`、`CsprojVersionEditor.cs`（唯一会改源文件的功能，默认关闭）
 - 本工具自身的安装包：`tools/make-installer.ps1`（**必须在普通终端跑**，自带沙箱检测）
 - Release 正文生成：`tools/make-release-notes.ps1`（按规范提交分组，CI 的 release 任务调它）
+- 工具自身日志：NLog，配置 `src/DotnetPublishTool.App/NLog.config`（写 `%LOCALAPPDATA%\DotnetPublishTool\logs`，按天 + 5MB 轮转，默认 Debug）
 - 界面：`src/DotnetPublishTool.App/MainWindow.xaml`、`src/DotnetPublishTool.App/ViewModels/MainViewModel.cs`
 - 端到端验证：`tools/DotnetPublishTool.Smoke`、`src/DotnetPublishTool.App/SelfTest.cs`
 
