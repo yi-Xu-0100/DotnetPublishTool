@@ -145,9 +145,18 @@ public sealed class MsiPackageBuilder
     ];
 
     /// <summary>
-    /// Windows Installer 的标准动作顺序。RemoveExistingProducts 排在 InstallInitialize 之后（大版本升级：
-    /// 新版本装好后由 RemoveExistingProducts 卸掉旧版本）。InstallUISequence 里的 ExecuteAction 负责
-    /// 把「界面序列」接到「执行序列」——少了它双击安装会什么都不做。
+    /// Windows Installer 的标准动作顺序。RemoveExistingProducts 排在 InstallValidate 之后、InstallInitialize
+    /// 之前（1401，等价 WiX 的 afterInstallValidate）：旧版本的卸载先作为**独立事务**跑完，再开始装新版本。
+    /// 这样旧版卸载没成功（文件被占用、权限不足等任何原因）时，新版根本不会开始装，也不会留下
+    /// 「旧版删了一半、新版又被回滚掉」的半截状态。本机的 Intel 驱动、VS Setup、PowerShell 7 也都排在 1401/1499。
+    /// <para>
+    /// 曾排在 1501（InstallInitialize 之后）：新旧装同一个事务里，旧版卸载失败会把整个升级拖成半截 —— 现场就是
+    /// 「装完打不开、再装一次才好」。不要再改回 1501，除非真的需要「先装新后卸旧」（那要求组件 ID 稳定 +
+    /// 版本严格递增，同版本重打包时新版文件会被版本规则跳过，整包等于没换）。
+    /// </para>
+    /// <para>
+    /// InstallUISequence 里的 ExecuteAction 负责把「界面序列」接到「执行序列」——少了它双击安装会什么都不做。
+    /// </para>
     /// </summary>
     private static readonly (string Action, string? Condition, int Sequence)[] ExecuteSequence =
     [
@@ -159,8 +168,8 @@ public sealed class MsiPackageBuilder
         ("CostFinalize", null, 1000),
         ("MigrateFeatureStates", null, 1200),
         ("InstallValidate", null, 1400),
+        ("RemoveExistingProducts", null, 1401),
         ("InstallInitialize", null, 1500),
-        ("RemoveExistingProducts", null, 1501),
         ("ProcessComponents", null, 1600),
         ("UnpublishFeatures", null, 1800),
         ("RemoveShortcuts", "Installed AND NOT UPGRADINGPRODUCTCODE", 3200),
