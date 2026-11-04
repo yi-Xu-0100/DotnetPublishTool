@@ -17,6 +17,8 @@
     <!-- 应用图标：由 tools/make-app-icon.ps1 生成（自己画的，无第三方素材），
          换样式改脚本里的图形段后重新跑一次即可。 -->
     <ApplicationIcon>app.ico</ApplicationIcon>
+    <NoWarn>$(NoWarn);WPF0001</NoWarn>
+    <Platforms>AnyCPU;x64</Platforms>
   </PropertyGroup>
 
   <ItemGroup>
