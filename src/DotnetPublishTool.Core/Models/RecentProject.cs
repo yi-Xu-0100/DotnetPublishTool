@@ -6,6 +6,9 @@ namespace DotnetPublishTool.Core.Models;
 /// <summary>最近选择的项目 / 解决方案记录，用于下次快速复选。</summary>
 public sealed class RecentProject
 {
+    /// <summary>该项目独立保存的 ZIP/MSI 打包选项；旧版记录为空时沿用全局设置。</summary>
+    public ProjectPackagingSettings? PackagingSettings { get; set; }
+
     /// <summary>项目或解决方案文件的绝对路径。</summary>
     public string FilePath { get; set; } = string.Empty;
 

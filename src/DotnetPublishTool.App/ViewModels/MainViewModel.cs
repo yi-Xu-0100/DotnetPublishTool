@@ -911,7 +911,8 @@ public sealed class MainViewModel : ObservableObject
                 return;
             }
 
-            // 解析成功，才一次性替换界面状态（先置空再选上：置空会让发布配置按新项目重新载入）
+            // 解析成功后才保存旧项目并替换界面状态；失败时不改变旧项目的选项。
+            PersistCurrentProjectPackagingSettings();
             Projects.Clear();
             Profiles.Clear();
             ExtraProperties.Clear();
@@ -926,7 +927,15 @@ public sealed class MainViewModel : ObservableObject
             _profilesLoadedFor = null;   // 显式载入（含重新扫描）要强制重载配置，同一项目也不例外
             SelectedProject = primary;
             StatusText = readyStatus;
-            RecordRecent(loadedPath!);
+            var recent = RecordRecent(loadedPath!, persist: false);
+            if (recent is null)
+            {
+                throw new InvalidOperationException("无法记录当前项目路径。");
+            }
+
+            recent.PackagingSettings ??= CaptureProjectPackagingSettings();
+            ApplyProjectPackagingSettings(recent);
+            PersistSettings();
         }
         catch (Exception ex)
         {
@@ -1410,11 +1419,11 @@ public sealed class MainViewModel : ObservableObject
     private void OnExtraRowChanged(object? sender, PropertyChangedEventArgs e) => RebuildPreview();
 
     /// <summary>把路径记到「最近项目」列表头部（去重、限长）并立即持久化。</summary>
-    private void RecordRecent(string path)
+    private RecentProject? RecordRecent(string path, bool persist = true)
     {
         if (string.IsNullOrWhiteSpace(path))
         {
-            return;
+            return null;
         }
 
         string fullPath;
@@ -1424,17 +1433,18 @@ public sealed class MainViewModel : ObservableObject
         }
         catch
         {
-            return;
+            return null;
         }
 
-        var existing = RecentProjects.FirstOrDefault(
-            r => string.Equals(r.FilePath, fullPath, StringComparison.OrdinalIgnoreCase));
+        var existing = FindRecent(fullPath);
         if (existing is not null)
         {
             RecentProjects.Remove(existing);
         }
 
-        var entry = new RecentProject { FilePath = fullPath, LastUsed = DateTimeOffset.Now };
+        var entry = existing ?? new RecentProject { FilePath = fullPath };
+        entry.FilePath = fullPath;
+        entry.LastUsed = DateTimeOffset.Now;
         RecentProjects.Insert(0, entry);
 
         while (RecentProjects.Count > MaxRecentProjects)
@@ -1447,7 +1457,12 @@ public sealed class MainViewModel : ObservableObject
         OnPropertyChanged(nameof(SelectedRecentProject));
         OnPropertyChanged(nameof(HasRecentProjects));
         ClearRecentProjectsCommand.RaiseCanExecuteChanged();
-        PersistSettings();
+        if (persist)
+        {
+            PersistSettings();
+        }
+
+        return entry;
     }
 
     private void RemoveRecent(RecentProject entry)
@@ -1561,8 +1576,83 @@ public sealed class MainViewModel : ObservableObject
         }
     }
 
+    private RecentProject? FindRecent(string path)
+    {
+        string fullPath;
+        try
+        {
+            fullPath = Path.GetFullPath(path);
+        }
+        catch
+        {
+            return null;
+        }
+
+        return RecentProjects.FirstOrDefault(
+            r => string.Equals(r.FilePath, fullPath, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private ProjectPackagingSettings CaptureProjectPackagingSettings() => new()
+    {
+        MakeZip = MakeZip,
+        ZipNamingMode = ZipNamingMode,
+        ZipDateFormat = string.IsNullOrWhiteSpace(ZipDateFormat) ? ZipOptions.DefaultDateFormat : ZipDateFormat,
+        CustomZipName = NullIfEmpty(CustomZipName),
+        ZipIncludeRootFolder = ZipIncludeRootFolder,
+        MakeMsi = MakeMsi,
+        MsiProductName = NullIfEmpty(MsiProductName),
+        MsiManufacturer = NullIfEmpty(MsiManufacturer),
+        MsiCreateShortcut = MsiCreateShortcut,
+        MsiCreateDesktopShortcut = MsiCreateDesktopShortcut,
+        MsiNamingMode = MsiNamingMode,
+        MsiCustomName = NullIfEmpty(MsiCustomName),
+        MsiAutoBumpVersion = MsiAutoBumpVersion,
+        MsiWriteVersionBack = MsiWriteVersionBack,
+    };
+
+    private void PersistCurrentProjectPackagingSettings()
+    {
+        if (string.IsNullOrWhiteSpace(ProjectPath))
+        {
+            return;
+        }
+
+        var entry = FindRecent(ProjectPath);
+        if (entry is not null)
+        {
+            entry.PackagingSettings = CaptureProjectPackagingSettings();
+        }
+    }
+
+    private void ApplyProjectPackagingSettings(RecentProject? entry)
+    {
+        var settings = entry?.PackagingSettings;
+        if (settings is null)
+        {
+            return;
+        }
+
+        MakeZip = settings.MakeZip;
+        ZipNamingMode = settings.ZipNamingMode;
+        ZipDateFormat = string.IsNullOrWhiteSpace(settings.ZipDateFormat) ? ZipOptions.DefaultDateFormat : settings.ZipDateFormat;
+        CustomZipName = settings.CustomZipName ?? string.Empty;
+        ZipIncludeRootFolder = settings.ZipIncludeRootFolder;
+        MakeMsi = settings.MakeMsi;
+        MsiProductName = settings.MsiProductName ?? string.Empty;
+        MsiManufacturer = settings.MsiManufacturer ?? string.Empty;
+        MsiCreateShortcut = settings.MsiCreateShortcut;
+        MsiCreateDesktopShortcut = settings.MsiCreateDesktopShortcut;
+        MsiNamingMode = settings.MsiNamingMode;
+        MsiCustomName = settings.MsiCustomName ?? string.Empty;
+        MsiAutoBumpVersion = settings.MsiAutoBumpVersion;
+        MsiWriteVersionBack = settings.MsiWriteVersionBack;
+        MsiAutoBumpVersionOnce = false;
+        RebuildPreview();
+    }
+
     private void PersistSettings()
     {
+        PersistCurrentProjectPackagingSettings();
         _settingsService.Save(new AppSettings
         {
             SettingsVersion = AppSettings.CurrentSettingsVersion,
