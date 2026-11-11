@@ -19,11 +19,19 @@
   </Window.Resources>
   <Grid Margin="12">
     <Grid.RowDefinitions>
-      <RowDefinition Height="Auto" />
       <RowDefinition Height="*" />
       <RowDefinition Height="165" />
       <RowDefinition Height="Auto" />
     </Grid.RowDefinitions>
+
+    <TabControl x:Name="MainTabs" Grid.Row="0" Background="Transparent" BorderThickness="0" Padding="0">
+      <TabItem Header="Dotnet 发布">
+        <Grid Margin="0,6,0,0">
+          <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+          </Grid.RowDefinitions>
 
     <!-- 项目选择 -->
     <Border Grid.Row="0" Style="{StaticResource Card}" Margin="0,0,0,5">
@@ -299,8 +307,154 @@
       </Border>
     </ScrollViewer>
 
+          <Border Grid.Row="2" Style="{StaticResource Card}" Margin="0,5,0,0" Padding="10,6">
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+              <Button Content="保存配置副本" Command="{Binding SaveProfileCommand}" />
+              <Button Content="打开项目地址" Command="{Binding OpenProjectFolderCommand}" />
+              <Button Content="打开输出目录" Command="{Binding OpenOutputFolderCommand}" />
+              <Button Content="生成并发布" Command="{Binding PublishCommand}" FontWeight="Bold"
+                      Background="{StaticResource Accent}" Foreground="White" MinWidth="110" />
+            </StackPanel>
+          </Border>
+        </Grid>
+      </TabItem>
+
+      <TabItem Header="前端打包">
+        <Grid Margin="0,6,0,0">
+          <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+            <Grid>
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="*" />
+              </Grid.ColumnDefinitions>
+
+              <Border Grid.Column="0" Style="{StaticResource Card}" Margin="0,0,6,0">
+                <StackPanel>
+                  <TextBlock Text="前端项目" Style="{StaticResource SectionHeader}" />
+                  <Grid>
+                    <Grid.ColumnDefinitions>
+                      <ColumnDefinition Width="Auto" />
+                      <ColumnDefinition Width="*" />
+                      <ColumnDefinition Width="Auto" />
+                      <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="项目目录：" Style="{StaticResource FieldLabel}" />
+                    <TextBox Grid.Column="1" Text="{Binding FrontendProjectPath, Mode=OneWay}" IsReadOnly="True" Background="#FFFBFBFB" />
+                    <Button Grid.Column="2" Content="选择…" Command="{Binding BrowseFrontendProjectCommand}" />
+                    <Button Grid.Column="3" Content="打开" Command="{Binding OpenFrontendProjectFolderCommand}" />
+                  </Grid>
+
+                  <Grid Margin="0,8,0,0">
+                    <Grid.ColumnDefinitions>
+                      <ColumnDefinition Width="Auto" />
+                      <ColumnDefinition Width="*" />
+                      <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="最近项目：" Style="{StaticResource FieldLabel}" />
+                    <ComboBox Grid.Column="1" ItemsSource="{Binding RecentFrontendProjects}"
+                              SelectedItem="{Binding SelectedRecentFrontendProject}"
+                              DisplayMemberPath="DisplayName"
+                              ToolTip="{Binding SelectedRecentFrontendProject.DirectoryPath}" />
+                    <Button Grid.Column="2" Content="清除记录" MinWidth="76" Command="{Binding ClearRecentFrontendProjectsCommand}" />
+                  </Grid>
+
+                  <TextBlock Text="{Binding FrontendProjectSummary}" TextWrapping="Wrap" Margin="0,8,0,0"
+                             Foreground="{StaticResource TextSecondary}" />
+
+                  <Grid Margin="0,10,0,0">
+                    <Grid.ColumnDefinitions>
+                      <ColumnDefinition Width="Auto" />
+                      <ColumnDefinition Width="130" />
+                      <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="包管理器：" Style="{StaticResource FieldLabel}" />
+                    <ComboBox Grid.Column="1" ItemsSource="{Binding FrontendPackageManagers}" DisplayMemberPath="Label"
+                              SelectedValuePath="Value" SelectedValue="{Binding FrontendPackageManager}" />
+                    <TextBox Grid.Column="2" Margin="8,0,0,0" Text="{Binding FrontendBuildArguments, UpdateSourceTrigger=PropertyChanged}"
+                             ToolTip="传给包管理器的参数，默认 run build" />
+                  </Grid>
+
+                  <TextBlock Text="{Binding FrontendCommandPreview}" TextWrapping="Wrap" Margin="0,6,0,0"
+                             FontFamily="Consolas" FontSize="12" Foreground="{StaticResource TextSecondary}" />
+
+                  <Grid Margin="0,10,0,0">
+                    <Grid.ColumnDefinitions>
+                      <ColumnDefinition Width="Auto" />
+                      <ColumnDefinition Width="*" />
+                      <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="dist 目录：" Style="{StaticResource FieldLabel}" />
+                    <TextBox Grid.Column="1" Text="{Binding FrontendDistDirectory, UpdateSourceTrigger=PropertyChanged}"
+                             ToolTip="相对路径按前端项目目录解析；Vite 默认 dist" />
+                    <Button Grid.Column="2" Content="打开" Command="{Binding OpenFrontendDistFolderCommand}" />
+                  </Grid>
+
+                  <TextBlock Text="{Binding FrontendDistPreview}" TextWrapping="Wrap" Margin="0,6,0,0"
+                             Foreground="{StaticResource TextSecondary}" />
+
+                  <TextBlock Margin="0,10,0,0" TextWrapping="Wrap" Foreground="{StaticResource TextSecondary}"
+                             Text="只调用包管理器构建，不执行 install；依赖请提前装好（node_modules 已存在）。构建和打包都不会改动源码。" />
+                </StackPanel>
+              </Border>
+
+              <Border Grid.Column="1" Style="{StaticResource Card}" Margin="6,0,0,0">
+                <StackPanel>
+                  <TextBlock Text="打包 dist" Style="{StaticResource SectionHeader}" />
+                  <Grid>
+                    <Grid.ColumnDefinitions>
+                      <ColumnDefinition Width="Auto" />
+                      <ColumnDefinition Width="*" />
+                      <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="输出目录：" Style="{StaticResource FieldLabel}" />
+                    <TextBox Grid.Column="1" Text="{Binding FrontendOutputDirectory, UpdateSourceTrigger=PropertyChanged}"
+                             ToolTip="留空时用「输出根目录\前端项目目录名」" />
+                    <Button Grid.Column="2" Content="浏览…" Command="{Binding BrowseFrontendOutputCommand}" />
+                  </Grid>
+
+                  <Grid Margin="0,6,0,0">
+                    <Grid.ColumnDefinitions>
+                      <ColumnDefinition Width="Auto" />
+                      <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="命名方式：" Style="{StaticResource FieldLabel}" />
+                    <ComboBox Grid.Column="1" ItemsSource="{Binding ZipNamingModes}" DisplayMemberPath="Label"
+                              SelectedValuePath="Value" SelectedValue="{Binding FrontendZipNamingMode}" />
+                  </Grid>
+                  <Grid Margin="0,6,0,0">
+                    <Grid.ColumnDefinitions>
+                      <ColumnDefinition Width="Auto" />
+                      <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="日期格式：" Style="{StaticResource FieldLabel}" />
+                    <TextBox Grid.Column="1" Text="{Binding FrontendZipDateFormat, UpdateSourceTrigger=PropertyChanged}"
+                             IsEnabled="{Binding IsFrontendDateNaming}" />
+                  </Grid>
+                  <Grid Margin="0,6,0,0">
+                    <Grid.ColumnDefinitions>
+                      <ColumnDefinition Width="Auto" />
+                      <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="自定义名称：" Style="{StaticResource FieldLabel}" />
+                    <TextBox Grid.Column="1" Text="{Binding FrontendCustomZipName, UpdateSourceTrigger=PropertyChanged}"
+                             IsEnabled="{Binding IsFrontendCustomNaming}" />
+                  </Grid>
+                  <CheckBox Content="压缩包内包含以项目名命名的顶层文件夹" IsChecked="{Binding FrontendZipIncludeRootFolder}" Margin="0,8,0,0"
+                            ToolTip="默认不勾选：解压出来就是 dist 里的文件本身" />
+                  <TextBlock Text="{Binding FrontendZipPathPreview}" TextWrapping="Wrap" Margin="0,6,0,0"
+                             Foreground="{StaticResource TextSecondary}" />
+                  <TextBlock Margin="0,10,0,0" TextWrapping="Wrap" Foreground="{StaticResource TextSecondary}"
+                             Text="压缩包默认按「项目名_日期时间」命名；同一秒内重名会自动追加 _2、_3，不会覆盖历史产物。" />
+                </StackPanel>
+              </Border>
+            </Grid>
+          </ScrollViewer>
+        </Grid>
+      </TabItem>
+    </TabControl>
+
     <!-- 日志 -->
-    <Border Grid.Row="2" Style="{StaticResource Card}" Margin="0,5,0,0" Padding="10,8">
+    <Border Grid.Row="1" Style="{StaticResource Card}" Margin="0,5,0,0" Padding="10,8">
       <DockPanel>
         <Grid DockPanel.Dock="Top" Margin="0,0,0,6">
           <TextBlock Text="日志" Style="{StaticResource SectionHeader}" Margin="0" />
@@ -318,14 +472,27 @@
     </Border>
 
     <!-- 状态与操作 -->
-    <Border Grid.Row="3" Style="{StaticResource Card}" Margin="0,5,0,0" Padding="10,6">
+    <Border Grid.Row="2" Style="{StaticResource Card}" Margin="0,5,0,0" Padding="10,6">
       <DockPanel>
         <StackPanel Orientation="Horizontal" DockPanel.Dock="Right">
-          <Button Content="保存配置副本" Command="{Binding SaveProfileCommand}" />
-          <Button Content="打开项目地址" Command="{Binding OpenProjectFolderCommand}" />
-          <Button Content="打开输出目录" Command="{Binding OpenOutputFolderCommand}" />
           <Button Content="取消" Command="{Binding CancelCommand}" />
-          <Button Content="生成并发布" Command="{Binding PublishCommand}" FontWeight="Bold"
+        </StackPanel>
+        <StackPanel Orientation="Horizontal" DockPanel.Dock="Right">
+          <StackPanel.Style>
+            <Style TargetType="StackPanel">
+              <Setter Property="Visibility" Value="Collapsed" />
+              <Style.Triggers>
+                <DataTrigger Binding="{Binding SelectedIndex, ElementName=MainTabs}" Value="1">
+                  <Setter Property="Visibility" Value="Visible" />
+                </DataTrigger>
+              </Style.Triggers>
+            </Style>
+          </StackPanel.Style>
+          <Button Content="打开项目目录" Command="{Binding OpenFrontendProjectFolderCommand}" />
+          <Button Content="打开输出目录" Command="{Binding OpenFrontendOutputFolderCommand}" />
+          <Button Content="打开 dist" Command="{Binding OpenFrontendDistFolderCommand}" />
+          <Button Content="仅打包 dist" Command="{Binding PackageFrontendOnlyCommand}" />
+          <Button Content="构建并打包" Command="{Binding BuildAndPackageFrontendCommand}" FontWeight="Bold"
                   Background="{StaticResource Accent}" Foreground="White" MinWidth="110" />
         </StackPanel>
         <ProgressBar DockPanel.Dock="Right" Width="140" Margin="10,0,0,0" VerticalAlignment="Stretch"

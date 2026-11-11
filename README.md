@@ -16,6 +16,7 @@
 - 「配置预览」实时显示本次将要写出的 `.pubxml` 内容。
 - 发布到默认目录，可选发布前清空发布目录、可选 `--no-restore`。
 - 发布成功后可选生成 zip；命名支持项目名 / 项目名_版本号 / 项目名_日期 / 自定义。
+- 顶部分页「前端打包」：选带 `package.json` 的前端项目，用 pnpm / npm / yarn 构建一次，把 `dist` 打成按日期命名的 zip（见 [前端打包](#前端打包)）。
 - 发布成功后可选生成 **MSI 安装包**（装到 `Program Files`、出现在「程序和功能」里、可 `msiexec` 静默安装/卸载）。
 - 运行日志实时显示 dotnet 原始输出，可取消正在进行的发布。
 
@@ -61,6 +62,33 @@
   文件名不能含 `:`，所以日期与时间之间用 `_` 分隔。
 - 版本号取项目里**最大的那个版本键**：`Version` / `AssemblyVersion` / `FileVersion` / `InformationalVersion`（只写了后三个、没写 `Version` 的项目也能取到应用真正在用的版本）；解析不到时用 `unknown`，也可在「版本覆盖」里指定。
 - 压缩包内**默认不包含**顶层文件夹（解压出来就是文件本身）；勾选「压缩包内包含以项目名命名的顶层文件夹」后才会多一层。
+
+## 前端打包
+
+工具顶部第二个分页「前端打包」给前端项目（Vite / Vue / React 等）构建一次，并把构建产物（默认 `dist`）打成压缩包。它和 dotnet 发布是两个互不影响的页签，共用同一个日志面板与取消按钮。
+
+```text
+<前端项目目录>\package.json
+<前端项目目录>\dist\                      # 构建产物（可改，也支持绝对路径）
+<输出根目录>\<目录名>\<目录名>_<日期>.zip  # 默认输出、默认命名
+```
+
+| 项 | 说明 |
+| --- | --- |
+| 项目目录 | 含 `package.json` 的目录；「选择…」选目录后自动读出名称、版本与脚本列表 |
+| 包管理器 | `pnpm`（默认）/ `npm` / `yarn`，命令 = 包管理器 + 构建参数 |
+| 构建参数 | 默认 `run build`（即 `pnpm run build`）；可改成 `build`、`run build:prod` 等 |
+| dist 目录 | 相对项目目录或绝对路径；不存在或为空时直接报错，不会产出空包 |
+| 输出目录 | 留空用 `<输出根目录>\<目录名>`，与 dotnet 发布的默认口径一致 |
+| 命名方式 | 项目名 / 项目名_版本号 / 项目名_日期（默认）/ 自定义，规则与 dotnet 压缩包完全相同 |
+
+- **只构建、不 install**：依赖要提前装好（`node_modules` 存在），否则构建失败并把包管理器的输出原样打到日志里。
+- **不改前端项目源码**：构建只写它自己该写的 `dist` 等产物；工具本身不碰 `package.json` 与源码。
+- 项目名取 `package.json` 的 `name`，取不到时用目录名；「项目名_版本号」的版本取 `package.json` 的 `version`。
+- **同名自动避让**：目标 zip 已存在时追加 `_2`、`_3`…，不会覆盖历史产物（同一秒连点两次也安全）。
+- 「仅打包 dist」跳过构建，只压现有 dist —— 适合 dist 由别的流水线生成的场景。
+- **每个前端项目单独记住**包管理器、构建参数、dist、输出目录与命名方式；最近项目列表最多 20 条，可一键清除。
+- 包管理器是 `.cmd` 垫片，工具通过 `cmd.exe /d /s /c` 执行（非 Windows 用 `/bin/sh -lc`），所以 `pnpm` 在 PATH 里即可，不需要额外配置。
 
 ## MSI 安装包
 
@@ -212,6 +240,9 @@ dotnet run --project tools/DotnetPublishTool.Smoke -- publish samples/SampleCons
 
 # 只把已有的发布目录做成 MSI
 dotnet run --project tools/DotnetPublishTool.Smoke -- pack-msi .smoke-out/SampleConsoleApp/publish --out .smoke-out/SampleConsoleApp
+
+# 前端：pnpm run build 后打包 dist（--no-build 只打包现有 dist）
+dotnet run --project tools/DotnetPublishTool.Smoke -- frontend C:\path\IPSWindow --out .smoke-out
 ```
 
 图形程序本身也带无界面自检（会真实解析 XAML 并跑一次发布）：

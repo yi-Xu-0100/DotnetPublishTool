@@ -25,6 +25,8 @@ public sealed class MainViewModel : ObservableObject
     private readonly PublishProfileStore _profileStore;
     private readonly PublishWorkflow _workflow;
     private readonly MsiVersionService _versionService;
+    private readonly FrontendBuildWorkflow _frontendWorkflow;
+    private readonly FrontendProjectReader _frontendReader;
     private readonly StringBuilder _logBuilder = new();
     private readonly object _logLock = new();
 
@@ -72,6 +74,22 @@ public sealed class MainViewModel : ObservableObject
     private string? _profilesLoadedFor;
     private bool _msiWriteVersionBack = true;
 
+    private FrontendProjectInfo? _frontendProject;
+    private RecentFrontendProject? _selectedRecentFrontendProject;
+    private string? _lastFrontendProjectPath;
+    private FrontendPackageOptions _frontendDefaults = new();
+
+    private string _frontendProjectPath = string.Empty;
+    private FrontendPackageManager _frontendPackageManager = FrontendPackageManager.Pnpm;
+    private string _frontendBuildArguments = FrontendPackageOptions.DefaultBuildArguments;
+    private string _frontendDistDirectory = FrontendPackageOptions.DefaultDistDirectory;
+    private string _frontendOutputDirectory = string.Empty;
+    private ZipNamingMode _frontendZipNamingMode = ZipNamingMode.ProjectNameDate;
+    private string _frontendZipDateFormat = ZipOptions.DefaultDateFormat;
+    private string _frontendCustomZipName = string.Empty;
+    private bool _frontendZipIncludeRootFolder;
+    private string _frontendProjectSummary = "请选择前端项目目录（包含 package.json）。";
+
     private string _profilePreviewXml = string.Empty;
     private string _logText = string.Empty;
     private string _statusText = "请选择一个 dotnet 项目或解决方案。";
@@ -83,7 +101,9 @@ public sealed class MainViewModel : ObservableObject
         ProjectInspector inspector,
         PublishProfileStore profileStore,
         PublishWorkflow workflow,
-        MsiVersionService versionService)
+        MsiVersionService versionService,
+        FrontendBuildWorkflow frontendWorkflow,
+        FrontendProjectReader frontendReader)
     {
         _dialogs = dialogs;
         _settingsService = settingsService;
@@ -91,6 +111,8 @@ public sealed class MainViewModel : ObservableObject
         _profileStore = profileStore;
         _workflow = workflow;
         _versionService = versionService;
+        _frontendWorkflow = frontendWorkflow;
+        _frontendReader = frontendReader;
 
         BrowseProjectCommand = new AsyncRelayCommand(BrowseProjectAsync, () => !IsBusy);
         RescanCommand = new AsyncRelayCommand(RescanAsync, () => !IsBusy && !string.IsNullOrWhiteSpace(ProjectPath));
@@ -103,6 +125,16 @@ public sealed class MainViewModel : ObservableObject
         OpenOutputFolderCommand = new RelayCommand(OpenOutputFolder, () => SelectedProject is not null);
         CancelCommand = new RelayCommand(Cancel, () => IsBusy);
         PublishCommand = new AsyncRelayCommand(PublishAsync, () => !IsBusy && SelectedProject is not null);
+        BrowseFrontendProjectCommand = new RelayCommand(BrowseFrontendProject, () => !IsBusy);
+        ClearRecentFrontendProjectsCommand = new RelayCommand(ClearRecentFrontendProjects, () => RecentFrontendProjects.Count > 0);
+        BrowseFrontendOutputCommand = new RelayCommand(BrowseFrontendOutput, () => !IsBusy);
+        OpenFrontendProjectFolderCommand = new RelayCommand(OpenFrontendProjectFolder, () => _frontendProject is not null);
+        OpenFrontendOutputFolderCommand = new RelayCommand(OpenFrontendOutputFolder);
+        OpenFrontendDistFolderCommand = new RelayCommand(OpenFrontendDistFolder, () => _frontendProject is not null);
+        BuildAndPackageFrontendCommand = new AsyncRelayCommand(
+            () => FrontendPackageAsync(build: true), () => !IsBusy && _frontendProject is not null);
+        PackageFrontendOnlyCommand = new AsyncRelayCommand(
+            () => FrontendPackageAsync(build: false), () => !IsBusy && _frontendProject is not null);
 
         ExtraProperties.CollectionChanged += OnExtraPropertiesChanged;
     }
@@ -190,6 +222,22 @@ public sealed class MainViewModel : ObservableObject
     public RelayCommand CancelCommand { get; }
 
     public AsyncRelayCommand PublishCommand { get; }
+
+    public RelayCommand BrowseFrontendProjectCommand { get; }
+
+    public RelayCommand ClearRecentFrontendProjectsCommand { get; }
+
+    public RelayCommand BrowseFrontendOutputCommand { get; }
+
+    public RelayCommand OpenFrontendProjectFolderCommand { get; }
+
+    public RelayCommand OpenFrontendOutputFolderCommand { get; }
+
+    public RelayCommand OpenFrontendDistFolderCommand { get; }
+
+    public AsyncRelayCommand BuildAndPackageFrontendCommand { get; }
+
+    public AsyncRelayCommand PackageFrontendOnlyCommand { get; }
 
     public string ProjectPath
     {
@@ -672,6 +720,225 @@ public sealed class MainViewModel : ObservableObject
         }
     }
 
+    /// <summary>前端项目目录（只读展示，通过「选择…」载入）。</summary>
+    public string FrontendProjectPath
+    {
+        get => _frontendProjectPath;
+        private set => SetProperty(ref _frontendProjectPath, value);
+    }
+
+    /// <summary>前端项目可选的包管理器。</summary>
+    public IReadOnlyList<FrontendPackageManagerOption> FrontendPackageManagers { get; } =
+    [
+        new("pnpm（默认）", FrontendPackageManager.Pnpm),
+        new("npm", FrontendPackageManager.Npm),
+        new("yarn", FrontendPackageManager.Yarn),
+    ];
+
+    public FrontendPackageManager FrontendPackageManager
+    {
+        get => _frontendPackageManager;
+        set
+        {
+            if (SetProperty(ref _frontendPackageManager, value))
+            {
+                RebuildFrontendPreview();
+            }
+        }
+    }
+
+    /// <summary>传给包管理器的构建参数，默认 run build。</summary>
+    public string FrontendBuildArguments
+    {
+        get => _frontendBuildArguments;
+        set
+        {
+            if (SetProperty(ref _frontendBuildArguments, value))
+            {
+                RebuildFrontendPreview();
+            }
+        }
+    }
+
+    /// <summary>构建产物目录；相对路径按前端项目目录解析。</summary>
+    public string FrontendDistDirectory
+    {
+        get => _frontendDistDirectory;
+        set
+        {
+            if (SetProperty(ref _frontendDistDirectory, value))
+            {
+                RebuildFrontendPreview();
+            }
+        }
+    }
+
+    /// <summary>压缩包输出目录；留空时用输出根目录下的项目目录。</summary>
+    public string FrontendOutputDirectory
+    {
+        get => _frontendOutputDirectory;
+        set
+        {
+            if (SetProperty(ref _frontendOutputDirectory, value))
+            {
+                RebuildFrontendPreview();
+            }
+        }
+    }
+
+    public ZipNamingMode FrontendZipNamingMode
+    {
+        get => _frontendZipNamingMode;
+        set
+        {
+            if (SetProperty(ref _frontendZipNamingMode, value))
+            {
+                RebuildFrontendPreview();
+            }
+        }
+    }
+
+    public string FrontendZipDateFormat
+    {
+        get => _frontendZipDateFormat;
+        set
+        {
+            if (SetProperty(ref _frontendZipDateFormat, value))
+            {
+                RebuildFrontendPreview();
+            }
+        }
+    }
+
+    public string FrontendCustomZipName
+    {
+        get => _frontendCustomZipName;
+        set
+        {
+            if (SetProperty(ref _frontendCustomZipName, value))
+            {
+                RebuildFrontendPreview();
+            }
+        }
+    }
+
+    public bool FrontendZipIncludeRootFolder
+    {
+        get => _frontendZipIncludeRootFolder;
+        set => SetProperty(ref _frontendZipIncludeRootFolder, value);
+    }
+
+    public bool IsFrontendDateNaming => FrontendZipNamingMode == ZipNamingMode.ProjectNameDate;
+
+    public bool IsFrontendCustomNaming => FrontendZipNamingMode == ZipNamingMode.Custom;
+
+    public string FrontendProjectSummary
+    {
+        get => _frontendProjectSummary;
+        private set => SetProperty(ref _frontendProjectSummary, value);
+    }
+
+    /// <summary>最近选择的前端项目目录，最近的在前。</summary>
+    public ObservableCollection<RecentFrontendProject> RecentFrontendProjects { get; } = [];
+
+    public bool HasRecentFrontendProjects => RecentFrontendProjects.Count > 0;
+
+    public RecentFrontendProject? SelectedRecentFrontendProject
+    {
+        get => _selectedRecentFrontendProject;
+        set
+        {
+            if (!SetProperty(ref _selectedRecentFrontendProject, value))
+            {
+                return;
+            }
+
+            if (value is null || string.IsNullOrWhiteSpace(value.DirectoryPath))
+            {
+                return;
+            }
+
+            if (!Directory.Exists(value.DirectoryPath))
+            {
+                _dialogs.ShowError(
+                    "最近的前端项目已不存在：" + Environment.NewLine + value.DirectoryPath + Environment.NewLine
+                    + "已从记录中移除。",
+                    "记录已失效");
+                RemoveFrontendRecent(value);
+                return;
+            }
+
+            LoadFrontendProject(value.DirectoryPath);
+        }
+    }
+
+    /// <summary>将要执行的构建命令。</summary>
+    public string FrontendCommandPreview => _frontendProject is null
+        ? "执行：（未选择前端项目）"
+        : "执行：" + FrontendBuildWorkflow.BuildCommandLine(CaptureFrontendOptions());
+
+    /// <summary>dist 目录与文件数，便于打包前确认产物存在。</summary>
+    public string FrontendDistPreview
+    {
+        get
+        {
+            if (_frontendProject is null)
+            {
+                return "dist 目录：未选择前端项目";
+            }
+
+            try
+            {
+                var directory = FrontendBuildWorkflow.ResolveDistDirectory(_frontendProject.Directory, FrontendDistDirectory);
+                if (!Directory.Exists(directory))
+                {
+                    return "dist 目录：" + directory + "（不存在，构建后生成）";
+                }
+
+                var count = Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories).Count();
+                return $"dist 目录：{directory}（{count} 个文件）";
+            }
+            catch (Exception ex) when (ex is ArgumentException or NotSupportedException or IOException)
+            {
+                return "dist 目录：路径无效（" + ex.Message + "）";
+            }
+        }
+    }
+
+    /// <summary>压缩包路径预览。</summary>
+    public string FrontendZipPathPreview
+    {
+        get
+        {
+            if (_frontendProject is null)
+            {
+                return "压缩包：（未选择前端项目）";
+            }
+
+            try
+            {
+                var projectName = new DirectoryInfo(_frontendProject.Directory).Name;
+                var zip = new ZipOptions
+                {
+                    NamingMode = FrontendZipNamingMode,
+                    DateFormat = string.IsNullOrWhiteSpace(FrontendZipDateFormat)
+                        ? ZipOptions.DefaultDateFormat
+                        : FrontendZipDateFormat.Trim(),
+                    CustomName = NullIfEmpty(FrontendCustomZipName),
+                };
+                var fileName = ZipNaming.Resolve(zip, projectName);
+                var directory = string.IsNullOrWhiteSpace(FrontendOutputDirectory)
+                    ? PathLayout.GetProjectRoot(OutputRoot, projectName)
+                    : Path.GetFullPath(FrontendOutputDirectory.Trim());
+                return "压缩包：" + Path.Combine(directory, fileName);
+            }
+            catch (Exception ex) when (ex is FormatException or ArgumentException or NotSupportedException or PathTooLongException)
+            {
+                return "压缩包：路径或日期格式无效（" + ex.Message + "）";
+            }
+        }
+    }
+
     /// <summary>安装包路径预览（产品名留空时按项目名，版本按 MSI 规则规整）。</summary>
     public string MsiPathPreview
     {
@@ -821,6 +1088,9 @@ public sealed class MainViewModel : ObservableObject
         MsiAutoBumpVersion = settings.MsiAutoBumpVersion;
         MsiWriteVersionBack = settings.MsiWriteVersionBack;
         _lastProjectPath = settings.LastProjectPath;
+        _frontendDefaults = settings.FrontendOptions ?? new FrontendPackageOptions();
+        ApplyFrontendOptions(_frontendDefaults);
+        _lastFrontendProjectPath = settings.LastFrontendProjectPath;
 
         RecentProjects.Clear();
         foreach (var entry in settings.RecentProjects.Where(e => !string.IsNullOrWhiteSpace(e.FilePath)))
@@ -828,8 +1098,16 @@ public sealed class MainViewModel : ObservableObject
             RecentProjects.Add(entry);
         }
 
+        RecentFrontendProjects.Clear();
+        foreach (var entry in settings.RecentFrontendProjects.Where(e => !string.IsNullOrWhiteSpace(e.DirectoryPath)))
+        {
+            RecentFrontendProjects.Add(entry);
+        }
+
         OnPropertyChanged(nameof(HasRecentProjects));
         ClearRecentProjectsCommand.RaiseCanExecuteChanged();
+        OnPropertyChanged(nameof(HasRecentFrontendProjects));
+        ClearRecentFrontendProjectsCommand.RaiseCanExecuteChanged();
 
         var integrity = ProcessIntegrity.GetCurrent();
         AppendLog("[环境] 工具版本：" + WindowTitle + "；进程完整性级别：" + ProcessIntegrity.Describe(integrity));
@@ -860,6 +1138,14 @@ public sealed class MainViewModel : ObservableObject
         if (!string.IsNullOrWhiteSpace(candidate) && File.Exists(candidate))
         {
             _ = LoadPathAsync(candidate!);
+        }
+
+        var frontendCandidate = RecentFrontendProjects.FirstOrDefault(r => Directory.Exists(r.DirectoryPath))?.DirectoryPath
+            ?? _lastFrontendProjectPath;
+
+        if (!string.IsNullOrWhiteSpace(frontendCandidate) && Directory.Exists(frontendCandidate))
+        {
+            LoadFrontendProject(frontendCandidate!);
         }
     }
 
@@ -1249,6 +1535,395 @@ public sealed class MainViewModel : ObservableObject
         }
 
         Process.Start(new ProcessStartInfo { FileName = directory, UseShellExecute = true });
+    }
+
+    private void BrowseFrontendProject()
+    {
+        var initial = _frontendProject?.Directory ?? FrontendProjectPath;
+        if (string.IsNullOrWhiteSpace(initial))
+        {
+            initial = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+        }
+
+        var picked = _dialogs.PickFolder(initial);
+        if (!string.IsNullOrWhiteSpace(picked))
+        {
+            LoadFrontendProject(picked!);
+        }
+    }
+
+    private void BrowseFrontendOutput()
+    {
+        string initial;
+        if (!string.IsNullOrWhiteSpace(FrontendOutputDirectory))
+        {
+            initial = FrontendOutputDirectory;
+        }
+        else if (_frontendProject is not null)
+        {
+            try
+            {
+                initial = PathLayout.GetProjectRoot(OutputRoot, new DirectoryInfo(_frontendProject.Directory).Name);
+            }
+            catch
+            {
+                initial = OutputRoot;
+            }
+        }
+        else
+        {
+            initial = OutputRoot;
+        }
+
+        var picked = _dialogs.PickFolder(initial);
+        if (!string.IsNullOrWhiteSpace(picked))
+        {
+            FrontendOutputDirectory = picked!;
+        }
+    }
+
+    private void OpenFrontendProjectFolder()
+    {
+        var directory = _frontendProject?.Directory;
+        if (string.IsNullOrEmpty(directory) || !Directory.Exists(directory))
+        {
+            _dialogs.ShowInfo("找不到前端项目目录：" + (directory ?? "（没有选择项目）"));
+            return;
+        }
+
+        Process.Start(new ProcessStartInfo { FileName = directory, UseShellExecute = true });
+    }
+
+    /// <summary>在资源管理器里打开前端压缩包的输出目录（自定义目录优先，否则「输出根\目录名」）。</summary>
+    private void OpenFrontendOutputFolder()
+    {
+        string directory;
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(FrontendOutputDirectory))
+            {
+                directory = Path.GetFullPath(FrontendOutputDirectory.Trim());
+            }
+            else if (_frontendProject is not null)
+            {
+                directory = PathLayout.GetProjectRoot(OutputRoot, new DirectoryInfo(_frontendProject.Directory).Name);
+            }
+            else
+            {
+                directory = string.IsNullOrWhiteSpace(OutputRoot) ? PathLayout.DefaultOutputRoot : Path.GetFullPath(OutputRoot.Trim());
+            }
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            _dialogs.ShowInfo("输出目录路径无效：" + ex.Message);
+            return;
+        }
+
+        if (!Directory.Exists(directory))
+        {
+            _dialogs.ShowInfo("输出目录还不存在：" + directory + Environment.NewLine + "先执行一次「构建并打包」或「仅打包 dist」。");
+            return;
+        }
+
+        Process.Start(new ProcessStartInfo { FileName = directory, UseShellExecute = true });
+    }
+
+    private void OpenFrontendDistFolder()
+    {
+        if (_frontendProject is null)
+        {
+            _dialogs.ShowInfo("请先选择一个前端项目。");
+            return;
+        }
+
+        string directory;
+        try
+        {
+            directory = FrontendBuildWorkflow.ResolveDistDirectory(_frontendProject.Directory, FrontendDistDirectory);
+        }
+        catch (Exception ex)
+        {
+            _dialogs.ShowInfo("dist 目录路径无效：" + ex.Message);
+            return;
+        }
+
+        if (!Directory.Exists(directory))
+        {
+            _dialogs.ShowInfo("dist 目录还不存在：" + directory + Environment.NewLine + "先执行「构建并打包」后再打开。");
+            return;
+        }
+
+        Process.Start(new ProcessStartInfo { FileName = directory, UseShellExecute = true });
+    }
+
+    /// <summary>载入前端项目目录（含 package.json），恢复该项目上次保存的打包选项。</summary>
+    public void LoadFrontendProject(string directory)
+    {
+        if (string.IsNullOrWhiteSpace(directory))
+        {
+            return;
+        }
+
+        try
+        {
+            // 切换前把旧项目的选项写回它自己的最近记录。
+            PersistCurrentFrontendOptions();
+
+            var info = _frontendReader.Read(directory);
+            var recent = FindFrontendRecent(info.Directory);
+            if (recent?.Options is not null)
+            {
+                ApplyFrontendOptions(recent.Options);
+            }
+
+            _frontendProject = info;
+            _lastFrontendProjectPath = info.Directory;
+            FrontendProjectPath = info.Directory;
+            FrontendProjectSummary = info.Summary;
+
+            var entry = RecordFrontendRecent(info.Directory, persist: false);
+            _selectedRecentFrontendProject = entry;
+            OnPropertyChanged(nameof(SelectedRecentFrontendProject));
+
+            StatusText = "已载入前端项目：" + info.DisplayName;
+            AppendLog("[前端] 已载入项目：" + info.DisplayName + "（" + info.Directory + "）");
+            if (!info.Scripts.Contains("build", StringComparer.OrdinalIgnoreCase))
+            {
+                AppendLog("[提示] package.json 里没有 build 脚本，构建可能失败；可以直接用「仅打包 dist」。");
+            }
+
+            PersistSettings();
+            RaiseCommandStates();
+            RebuildFrontendPreview();
+        }
+        catch (Exception ex)
+        {
+            AppendLog("[错误] 载入前端项目失败：" + ex.Message);
+            _dialogs.ShowError("载入前端项目失败：" + Environment.NewLine + ex.Message, "载入失败");
+        }
+    }
+
+    private FrontendPackageOptions CaptureFrontendOptions() => new()
+    {
+        PackageManager = FrontendPackageManager,
+        BuildArguments = string.IsNullOrWhiteSpace(FrontendBuildArguments)
+            ? FrontendPackageOptions.DefaultBuildArguments
+            : FrontendBuildArguments.Trim(),
+        DistDirectory = string.IsNullOrWhiteSpace(FrontendDistDirectory)
+            ? FrontendPackageOptions.DefaultDistDirectory
+            : FrontendDistDirectory.Trim(),
+        OutputDirectory = NullIfEmpty(FrontendOutputDirectory),
+        NamingMode = FrontendZipNamingMode,
+        DateFormat = string.IsNullOrWhiteSpace(FrontendZipDateFormat) ? ZipOptions.DefaultDateFormat : FrontendZipDateFormat.Trim(),
+        IncludeRootFolder = FrontendZipIncludeRootFolder,
+        CustomName = NullIfEmpty(FrontendCustomZipName),
+    };
+
+    private void ApplyFrontendOptions(FrontendPackageOptions options)
+    {
+        FrontendPackageManager = options.PackageManager;
+        FrontendBuildArguments = string.IsNullOrWhiteSpace(options.BuildArguments)
+            ? FrontendPackageOptions.DefaultBuildArguments
+            : options.BuildArguments;
+        FrontendDistDirectory = string.IsNullOrWhiteSpace(options.DistDirectory)
+            ? FrontendPackageOptions.DefaultDistDirectory
+            : options.DistDirectory;
+        FrontendOutputDirectory = options.OutputDirectory ?? string.Empty;
+        FrontendZipNamingMode = options.NamingMode;
+        FrontendZipDateFormat = string.IsNullOrWhiteSpace(options.DateFormat) ? ZipOptions.DefaultDateFormat : options.DateFormat;
+        FrontendCustomZipName = options.CustomName ?? string.Empty;
+        FrontendZipIncludeRootFolder = options.IncludeRootFolder;
+    }
+
+    private void PersistCurrentFrontendOptions()
+    {
+        var directory = _frontendProject?.Directory;
+        if (string.IsNullOrWhiteSpace(directory))
+        {
+            return;
+        }
+
+        var entry = FindFrontendRecent(directory);
+        if (entry is not null)
+        {
+            entry.Options = CaptureFrontendOptions();
+        }
+    }
+
+    private RecentFrontendProject? FindFrontendRecent(string directory)
+    {
+        string fullPath;
+        try
+        {
+            fullPath = Path.GetFullPath(directory);
+        }
+        catch
+        {
+            return null;
+        }
+
+        return RecentFrontendProjects.FirstOrDefault(r => string.Equals(SafeFullPath(r.DirectoryPath), fullPath, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static string SafeFullPath(string path)
+    {
+        try
+        {
+            return Path.GetFullPath(path);
+        }
+        catch
+        {
+            return path;
+        }
+    }
+
+    /// <summary>把前端项目记到「最近项目」列表头部（去重、限长）。</summary>
+    private RecentFrontendProject RecordFrontendRecent(string directory, bool persist = true)
+    {
+        var fullPath = Path.GetFullPath(directory);
+        var existing = FindFrontendRecent(fullPath);
+        if (existing is not null)
+        {
+            RecentFrontendProjects.Remove(existing);
+        }
+
+        var entry = existing ?? new RecentFrontendProject { DirectoryPath = fullPath };
+        entry.DirectoryPath = fullPath;
+        entry.LastUsed = DateTimeOffset.Now;
+        entry.Options = CaptureFrontendOptions();
+        RecentFrontendProjects.Insert(0, entry);
+
+        while (RecentFrontendProjects.Count > MaxRecentProjects)
+        {
+            RecentFrontendProjects.RemoveAt(RecentFrontendProjects.Count - 1);
+        }
+
+        _selectedRecentFrontendProject = entry;
+        OnPropertyChanged(nameof(SelectedRecentFrontendProject));
+        OnPropertyChanged(nameof(HasRecentFrontendProjects));
+        ClearRecentFrontendProjectsCommand.RaiseCanExecuteChanged();
+        if (persist)
+        {
+            PersistSettings();
+        }
+
+        return entry;
+    }
+
+    private void RemoveFrontendRecent(RecentFrontendProject entry)
+    {
+        RecentFrontendProjects.Remove(entry);
+        if (ReferenceEquals(_selectedRecentFrontendProject, entry))
+        {
+            _selectedRecentFrontendProject = null;
+            OnPropertyChanged(nameof(SelectedRecentFrontendProject));
+        }
+
+        OnPropertyChanged(nameof(HasRecentFrontendProjects));
+        ClearRecentFrontendProjectsCommand.RaiseCanExecuteChanged();
+        PersistSettings();
+    }
+
+    private void ClearRecentFrontendProjects()
+    {
+        RecentFrontendProjects.Clear();
+        _selectedRecentFrontendProject = null;
+        OnPropertyChanged(nameof(SelectedRecentFrontendProject));
+        OnPropertyChanged(nameof(HasRecentFrontendProjects));
+        ClearRecentFrontendProjectsCommand.RaiseCanExecuteChanged();
+        PersistSettings();
+        AppendLog("[记录] 已清除最近前端项目记录。");
+    }
+
+    /// <summary>构建（可选）并把 dist 打成压缩包。</summary>
+    private async Task<FrontendBuildResult?> FrontendPackageAsync(bool build)
+    {
+        if (_frontendProject is null)
+        {
+            _dialogs.ShowError("请先选择一个前端项目目录（包含 package.json）。", "未选择前端项目");
+            return null;
+        }
+
+        if (!EnsureOutputRootUsable())
+        {
+            return null;
+        }
+
+        if (!string.IsNullOrWhiteSpace(FrontendOutputDirectory))
+        {
+            var reason = OutputDirectoryService.TryEnsureWritable(FrontendOutputDirectory.Trim());
+            if (reason is not null)
+            {
+                _dialogs.ShowError(
+                    "压缩包输出目录不可写：" + Environment.NewLine + FrontendOutputDirectory + Environment.NewLine + reason,
+                    "输出目录不可用");
+                return null;
+            }
+        }
+
+        PersistCurrentFrontendOptions();
+
+        _cancellation = new CancellationTokenSource();
+        IsBusy = true;
+        StatusText = build ? "正在构建前端项目…" : "正在打包 dist…";
+        AppendLog(string.Empty);
+        AppendLog("==================== " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + " ====================");
+
+        var request = new FrontendBuildRequest
+        {
+            ProjectDirectory = _frontendProject.Directory,
+            ProjectName = new DirectoryInfo(_frontendProject.Directory).Name,
+            Options = CaptureFrontendOptions(),
+            OutputRoot = OutputRoot,
+            Build = build,
+        };
+
+        try
+        {
+            var progress = new Progress<string>(line => AppendLog(line));
+            var result = await _frontendWorkflow.RunAsync(request, progress, _cancellation.Token).ConfigureAwait(true);
+
+            if (result.Success)
+            {
+                StatusText = $"前端打包成功：{result.FileCount} 个文件，用时 {result.Duration.TotalSeconds:F1}s。";
+                PersistSettings();
+            }
+            else
+            {
+                StatusText = build ? "前端构建失败。" : "前端打包失败。";
+                _dialogs.ShowError(result.ErrorMessage ?? "前端打包失败。", build ? "构建失败" : "打包失败");
+            }
+
+            return result;
+        }
+        catch (OperationCanceledException)
+        {
+            AppendLog("[取消] 已取消前端打包。");
+            StatusText = "已取消。";
+            return null;
+        }
+        catch (Exception ex)
+        {
+            AppendLog("[异常] " + ex);
+            _dialogs.ShowError(ex.Message, "前端打包异常");
+            StatusText = "前端打包异常。";
+            return null;
+        }
+        finally
+        {
+            IsBusy = false;
+            _cancellation?.Dispose();
+            _cancellation = null;
+        }
+    }
+
+    private void RebuildFrontendPreview()
+    {
+        OnPropertyChanged(nameof(FrontendCommandPreview));
+        OnPropertyChanged(nameof(FrontendDistPreview));
+        OnPropertyChanged(nameof(FrontendZipPathPreview));
+        OnPropertyChanged(nameof(IsFrontendDateNaming));
+        OnPropertyChanged(nameof(IsFrontendCustomNaming));
     }
 
     private void LoadProfilesFor(ProjectInfo? project)
@@ -1696,6 +2371,9 @@ public sealed class MainViewModel : ObservableObject
             MsiWriteVersionBack = MsiWriteVersionBack,
             LastProjectPath = string.IsNullOrWhiteSpace(ProjectPath) ? _lastProjectPath : ProjectPath,
             RecentProjects = RecentProjects.ToList(),
+            FrontendOptions = CaptureFrontendOptions(),
+            LastFrontendProjectPath = string.IsNullOrWhiteSpace(FrontendProjectPath) ? _lastFrontendProjectPath : FrontendProjectPath,
+            RecentFrontendProjects = RecentFrontendProjects.ToList(),
         });
     }
 
@@ -1709,6 +2387,14 @@ public sealed class MainViewModel : ObservableObject
         OpenOutputFolderCommand.RaiseCanExecuteChanged();
         CancelCommand.RaiseCanExecuteChanged();
         PublishCommand.RaiseCanExecuteChanged();
+        BrowseFrontendProjectCommand.RaiseCanExecuteChanged();
+        ClearRecentFrontendProjectsCommand.RaiseCanExecuteChanged();
+        BrowseFrontendOutputCommand.RaiseCanExecuteChanged();
+        OpenFrontendProjectFolderCommand.RaiseCanExecuteChanged();
+        OpenFrontendOutputFolderCommand.RaiseCanExecuteChanged();
+        OpenFrontendDistFolderCommand.RaiseCanExecuteChanged();
+        BuildAndPackageFrontendCommand.RaiseCanExecuteChanged();
+        PackageFrontendOnlyCommand.RaiseCanExecuteChanged();
         CheckUiStateConsistency();
     }
 

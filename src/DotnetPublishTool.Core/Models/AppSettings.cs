@@ -4,7 +4,7 @@ namespace DotnetPublishTool.Core.Models;
 public sealed class AppSettings
 {
     /// <summary>当前设置结构版本；用于让新增的默认值在老配置上生效。</summary>
-    public const int CurrentSettingsVersion = 5;
+    public const int CurrentSettingsVersion = 6;
 
     /// <summary>设置结构版本；0 表示旧版（无版本号）。</summary>
     public int SettingsVersion { get; set; }
@@ -48,4 +48,13 @@ public sealed class AppSettings
 
     /// <summary>最近选择的项目 / 解决方案，最近的在前。</summary>
     public List<RecentProject> RecentProjects { get; set; } = [];
+
+    /// <summary>最近一次使用的前端构建与打包选项。</summary>
+    public FrontendPackageOptions? FrontendOptions { get; set; }
+
+    /// <summary>最近使用的前端项目目录（下次启动时自动载入）。</summary>
+    public string? LastFrontendProjectPath { get; set; }
+
+    /// <summary>最近选择的前端项目，最近的在前。</summary>
+    public List<RecentFrontendProject> RecentFrontendProjects { get; set; } = [];
 }

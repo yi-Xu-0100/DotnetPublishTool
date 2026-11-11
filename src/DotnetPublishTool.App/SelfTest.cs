@@ -1,6 +1,7 @@
 using System.IO;
 using System.Text.Json;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using DotnetPublishTool.App.Services;
@@ -13,12 +14,15 @@ namespace DotnetPublishTool.App;
 /// <summary>
 /// 无界面自检：加载真实 XAML（验证资源与控件），再驱动 ViewModel 完成一次真实发布（可选打包）。
 /// 用法：DotnetPublishTool.exe --selftest --project &lt;项目&gt; --out &lt;输出目录&gt; [--zip] [--msi] [--msi-bump-version] [--msi-write-version-back] [--zip-mode ProjectNameVersion]
+/// 渲染布局：--selftest --render &lt;png&gt; [--project &lt;项目&gt;] [--frontend &lt;前端目录&gt;] [--tab dotnet|frontend]
 /// </summary>
 internal static class SelfTest
 {
     public static int Run(string[] args)
     {
         var project = GetOption(args, "--project");
+        var frontend = GetOption(args, "--frontend");
+        var tab = GetOption(args, "--tab");
         var outputRoot = GetOption(args, "--out");
         var zipMode = GetOption(args, "--zip-mode");
         var renderPath = GetOption(args, "--render");
@@ -26,12 +30,6 @@ internal static class SelfTest
         var wantMsi = args.Contains("--msi", StringComparer.OrdinalIgnoreCase);
         var wantBump = args.Contains("--msi-bump-version", StringComparer.OrdinalIgnoreCase);
         var wantWriteBack = args.Contains("--msi-write-version-back", StringComparer.OrdinalIgnoreCase);
-
-        if (string.IsNullOrWhiteSpace(project))
-        {
-            Console.Error.WriteLine("缺少 --project 参数。");
-            return 2;
-        }
 
         try
         {
@@ -57,7 +55,13 @@ internal static class SelfTest
                         renderViewModel.LoadPathAsync(project!).GetAwaiter().GetResult();
                     }
 
-                    RenderToPng(renderViewModel, renderPath!, 1240, 880);
+                    if (!string.IsNullOrWhiteSpace(frontend))
+                    {
+                        renderViewModel.LoadFrontendProject(frontend!);
+                    }
+
+                    var tabIndex = string.Equals(tab, "frontend", StringComparison.OrdinalIgnoreCase) || tab == "2" ? 1 : 0;
+                    RenderToPng(renderViewModel, renderPath!, 1240, 880, tabIndex);
                 }
                 finally
                 {
@@ -66,6 +70,12 @@ internal static class SelfTest
 
                 Console.WriteLine("rendered: " + renderPath);
                 return 0;
+            }
+
+            if (string.IsNullOrWhiteSpace(project))
+            {
+                Console.Error.WriteLine("缺少 --project 参数（渲染模式可用 --frontend）。");
+                return 2;
             }
 
             // 1) 构造窗口以真实解析 XAML（StaticResource 缺失等问题会在此抛出）。
@@ -152,9 +162,14 @@ internal static class SelfTest
     }
 
     /// <summary>把主界面内容离屏渲染成 PNG，用于目视核对。</summary>
-    private static void RenderToPng(MainViewModel viewModel, string path, int width, int height)
+    private static void RenderToPng(MainViewModel viewModel, string path, int width, int height, int tabIndex)
     {
         var window = new MainWindow { DataContext = viewModel };
+        if (window.FindName("MainTabs") is TabControl tabs)
+        {
+            tabs.SelectedIndex = tabIndex;
+        }
+
         if (window.Content is not FrameworkElement root)
         {
             throw new InvalidOperationException("窗口没有可渲染的内容。");

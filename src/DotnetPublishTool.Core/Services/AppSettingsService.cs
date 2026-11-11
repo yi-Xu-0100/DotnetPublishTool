@@ -101,6 +101,7 @@ public sealed class AppSettingsService
     private static AppSettings Migrate(AppSettings settings)
     {
         settings.RecentProjects ??= [];
+        settings.RecentFrontendProjects ??= [];
 
         // v2：默认命名改为「项目名_日期」，日期格式带时分秒。
         if (settings.SettingsVersion < 2)

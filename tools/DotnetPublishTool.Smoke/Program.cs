@@ -8,6 +8,7 @@ DotnetPublishTool 端到端冒烟工具
   list     <project>                      解析项目并列出发现的发布配置
   publish  <project> [options]            按配置发布（可打包）
   pack-msi <发布目录> [options]            把已发布的目录做成 MSI 安装包
+  frontend <前端项目目录> [options]        构建前端项目（pnpm/npm/yarn）并把 dist 打成 zip
   bump     <版本> [<版本> ...]             只算「自动递增版本」的结果，用于核对规则
 
 options:
@@ -33,6 +34,17 @@ options:
   --no-msi-shortcut      不创建开始菜单快捷方式
   --no-msi-desktop-shortcut
                          不创建桌面快捷方式
+
+frontend options:
+  --out <dir>            输出根目录（默认 ./.smoke-out；压缩包默认放到 <out>/<目录名>）
+  --manager <name>       pnpm | npm | yarn（默认 pnpm）
+  --build-args <args>    传给包管理器的参数（默认 "run build"）
+  --dist <dir>           dist 目录，相对前端项目目录（默认 dist）
+  --no-build             不构建，直接打包现有 dist
+  --zip-mode <mode>      压缩包命名方式（默认 ProjectNameDate）
+  --zip-name <name>      Custom 模式使用的名称
+  --zip-dir <dir>        压缩包输出目录（默认 <out>/<目录名>）
+  --zip-root-folder      压缩包内包含顶层文件夹
 
 list 也可只在命令行传入项目路径（等价于 list）。
 """;
@@ -66,6 +78,7 @@ return command switch
     "list" => await ListAsync(rest),
     "publish" => await PublishAsync(rest),
     "pack-msi" => PackMsi(rest),
+    "frontend" => await FrontendAsync(rest),
     "bump" => Bump(rest),
     _ => Unknown(),
 };
@@ -244,6 +257,86 @@ static async Task<int> PublishAsync(List<string> arguments)
         durationSeconds = Math.Round(result.Duration.TotalSeconds, 2),
         result.CommandLine,
         result.ErrorMessage,
+    }, new JsonSerializerOptions { WriteIndented = true }));
+
+    return result.Success ? 0 : 1;
+}
+
+/// <summary>构建前端项目并把 dist 打成压缩包（端到端冒烟）。</summary>
+static async Task<int> FrontendAsync(List<string> arguments)
+{
+    var target = arguments.FirstOrDefault(a => !a.StartsWith("-"));
+    if (string.IsNullOrWhiteSpace(target))
+    {
+        Console.Error.WriteLine("缺少前端项目目录。");
+        return 2;
+    }
+
+    var outputRoot = GetOption(arguments, "--out")
+        ?? Path.Combine(Directory.GetCurrentDirectory(), ".smoke-out");
+    var managerText = GetOption(arguments, "--manager");
+    var packageManager = Enum.TryParse<FrontendPackageManager>(managerText, ignoreCase: true, out var manager)
+        ? manager
+        : FrontendPackageManager.Pnpm;
+    var zipModeText = GetOption(arguments, "--zip-mode");
+    var zipNamingMode = Enum.TryParse<ZipNamingMode>(zipModeText, ignoreCase: true, out var parsedMode)
+        ? parsedMode
+        : ZipNamingMode.ProjectNameDate;
+
+    var reader = new FrontendProjectReader();
+    FrontendProjectInfo info;
+    try
+    {
+        info = reader.Read(Path.GetFullPath(target));
+    }
+    catch (PublishException ex)
+    {
+        Console.Error.WriteLine(ex.Message);
+        return 1;
+    }
+
+    var request = new FrontendBuildRequest
+    {
+        ProjectDirectory = info.Directory,
+        ProjectName = new DirectoryInfo(info.Directory).Name,
+        OutputRoot = outputRoot,
+        Build = !HasFlag(arguments, "--no-build"),
+        Options = new FrontendPackageOptions
+        {
+            PackageManager = packageManager,
+            BuildArguments = GetOption(arguments, "--build-args") ?? FrontendPackageOptions.DefaultBuildArguments,
+            DistDirectory = GetOption(arguments, "--dist") ?? FrontendPackageOptions.DefaultDistDirectory,
+            OutputDirectory = GetOption(arguments, "--zip-dir"),
+            NamingMode = zipNamingMode,
+            CustomName = GetOption(arguments, "--zip-name"),
+            IncludeRootFolder = HasFlag(arguments, "--zip-root-folder"),
+        },
+    };
+
+    var workflow = new FrontendBuildWorkflow(new ProcessRunner(), new ZipPackager());
+    var log = new Progress<string>(line => Console.WriteLine("[frontend] " + line));
+    FrontendBuildResult result;
+    try
+    {
+        result = await workflow.RunAsync(request, log, CancellationToken.None);
+    }
+    catch (PublishException ex)
+    {
+        Console.Error.WriteLine(ex.Message);
+        return 1;
+    }
+
+    Console.WriteLine(JsonSerializer.Serialize(new
+    {
+        result.Success,
+        result.ExitCode,
+        result.CommandLine,
+        result.DistDirectory,
+        result.ZipPath,
+        result.FileCount,
+        durationSeconds = Math.Round(result.Duration.TotalSeconds, 2),
+        result.ErrorMessage,
+        project = new { info.Name, info.Version, scripts = info.Scripts },
     }, new JsonSerializerOptions { WriteIndented = true }));
 
     return result.Success ? 0 : 1;

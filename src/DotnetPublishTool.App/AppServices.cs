@@ -15,6 +15,8 @@ public static class AppServices
         var versionService = new MsiVersionService();
         var workflow = new PublishWorkflow(
             profileStore, new PublishCommandBuilder(), runner, new ZipPackager(), new MsiPackageBuilder(), versionService);
+        var frontendWorkflow = new FrontendBuildWorkflow(new ProcessRunner(), new ZipPackager());
+        var frontendReader = new FrontendProjectReader();
 
         var viewModel = new MainViewModel(
             dialogs,
@@ -22,7 +24,9 @@ public static class AppServices
             inspector,
             profileStore,
             workflow,
-            versionService);
+            versionService,
+            frontendWorkflow,
+            frontendReader);
 
         viewModel.Initialize();
         return viewModel;
