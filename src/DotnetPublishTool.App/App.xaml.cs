@@ -11,6 +11,12 @@ public partial class App : Application
     /// <summary>日志文件写不进去时的原因（正常为 null）；由界面启动时显示到日志面板。</summary>
     public static string? LogProblem { get; private set; }
 
+    /// <summary>日志目录：取自 NLog.config 里第一个文件目标的路径；解析不出来时退回默认位置。</summary>
+    /// <remarks>界面上的「打开日志目录」按钮用它 —— 配置改了写路径，按钮跟着走，不另存一份常量。</remarks>
+    public static string LogDirectory => _logDirectory ??= ResolveLogDirectory();
+
+    private static string? _logDirectory;
+
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
@@ -54,6 +60,28 @@ public partial class App : Application
             Log.Error(args.Exception, "未观察的任务异常");
             args.SetObserved();
         };
+    }
+
+    /// <summary>从 NLog 配置解析日志目录；没有文件目标或配置缺失时退回 %LOCALAPPDATA% 下的约定位置。</summary>
+    private static string ResolveLogDirectory()
+    {
+        var fallback = System.IO.Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DotnetPublishTool", "logs");
+
+        try
+        {
+            var target = (NLog.LogManager.Configuration?.AllTargets ?? [])
+                .OfType<NLog.Targets.FileTarget>()
+                .FirstOrDefault();
+            var file = target?.FileName?.Render(NLog.LogEventInfo.CreateNullEvent());
+            var directory = string.IsNullOrWhiteSpace(file) ? null : System.IO.Path.GetDirectoryName(file);
+            return string.IsNullOrWhiteSpace(directory) ? fallback : directory!;
+        }
+        catch (Exception)
+        {
+            // 配置坏掉时按钮仍要有落点：退回默认目录，写不进去由 LogProblem 在日志面板里说明。
+            return fallback;
+        }
     }
 
     /// <summary>探一次日志目录：写不进文件就返回原因，能写返回 null。</summary>

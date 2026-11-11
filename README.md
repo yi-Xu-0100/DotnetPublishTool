@@ -144,17 +144,21 @@ powershell -ExecutionPolicy Bypass -File .\tools\make-installer.ps1 -Version 1.3
 
 ```powershell
 dotnet build DotnetPublishTool.slnx
+```
 
 > 应用图标（窗口、任务栏、安装包快捷方式都用它）由 `tools/make-app-icon.ps1` 生成：脚本自己画图 + 组装 16/20/24/32/40/48/64/128/256 九个尺寸的 `src/DotnetPublishTool.App/app.ico`。想换样式改脚本里的图形段，跑一次即可（`-Preview` 会顺带出一张各尺寸并排的预览图）。
 
 ### 工具自身日志（NLog）
 
 - **位置**：`%LOCALAPPDATA%\DotnetPublishTool\logs\`（启动后的第一条日志里也会打印一次）。**不写安装目录** —— 装到 Program Files 后那里对普通用户只读。
-- **文件**（按等级分工，结构与 LaserMotionCardMap 的 NLog.config 一致）：`tool-<日期>.log` 收 Info 及以上；`debug/logfile.log` 单独收 Debug（含 `[诊断]`，免得把常规日志刷满）；`error/logfile.log` 再抄一份 Warn/Error，便于现场直接看这份。每条日志带调用点（文件:行）。
-- **轮转**：按天 + 单文件 5MB（错误日志 2MB）切分，归档用 `archiveNumbering="DateAndSequence"`，最多 60 份 / 保留 30 天（debug 14 天）。不套 `AsyncWrapper` —— 崩溃时最后几行正是要看的，异步队列会丢。
+- **文件**（按等级分工，结构与 LaserMotionCardMap 的 NLog.config 一致）：`tool.log` 收 Info 及以上（归档为 `tool_<yymmdd>_<序号>.log`）；`debug/logfile.log` 单独收 Debug（含 `[诊断]`，免得把常规日志刷满）；`error/logfile.log` 再抄一份 Warn/Error，便于现场直接看这份。每条日志带调用点（文件:行）。
+- **轮转**：按天 + 单文件 5MB（错误日志 2MB）切分；归档命名用 NLog 6 的 `archiveSuffixFormat="_{1:yyMMdd}_{0:00}"`（`archiveNumbering` / `archiveDateFormat` 在 NLog 6 已弃用），归档形如 `tool_261111_00.log`：按天归档时日期是被归档文件所属那天，按大小归档时是归档当天，`_NN` 为序号。最多 60 份 / 保留 30 天（debug 14 天）。不套 `AsyncWrapper` —— 崩溃时最后几行正是要看的，异步队列会丢。
 - **等级**：默认 `Debug` 起（含 `[诊断]` 这类排查细节）；只想看常规信息，把 [NLog.config](src/DotnetPublishTool.App/NLog.config) 里的 `minlevel` 改成 `Info` 即可，不用改代码。界面日志按内容自动分级：错误/失败 → Error，提醒/提示 → Warn，诊断 → Debug，其余 Info。
 - **写不进去时不会静默**：启动会探一次日志目录，失败就以 `[提示]` 显示在日志面板里（NLog 本身是静默失败的）。
 - 未处理异常（界面线程 / 后台线程 / 未观察的 Task）都会落盘，所以"莫名其妙崩了"至少能留下原因。
+- **界面入口**：日志面板右上角「打开日志目录」直接打开上面这个目录。路径取自 [NLog.config](src/DotnetPublishTool.App/NLog.config) 的第一个文件目标（改配置换目录，按钮跟着走），目录不存在时先建再打开。
+
+```powershell
 dotnet run --project src/DotnetPublishTool.App
 ```
 

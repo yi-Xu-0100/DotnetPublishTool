@@ -96,6 +96,7 @@ public sealed class MainViewModel : ObservableObject
         RescanCommand = new AsyncRelayCommand(RescanAsync, () => !IsBusy && !string.IsNullOrWhiteSpace(ProjectPath));
         BrowseOutputRootCommand = new RelayCommand(BrowseOutputRoot, () => !IsBusy);
         ClearLogCommand = new RelayCommand(ClearLog);
+        OpenLogFolderCommand = new RelayCommand(OpenLogFolder);
         ClearRecentProjectsCommand = new RelayCommand(ClearRecentProjects, () => RecentProjects.Count > 0);
         SaveProfileCommand = new RelayCommand(() => SaveProfileOnly(), () => !IsBusy && SelectedProject is not null);
         OpenProjectFolderCommand = new RelayCommand(OpenProjectFolder, () => SelectedProject is not null);
@@ -151,6 +152,12 @@ public sealed class MainViewModel : ObservableObject
     public RelayCommand BrowseOutputRootCommand { get; }
 
     public RelayCommand ClearLogCommand { get; }
+
+    /// <summary>打开工具自身日志目录（路径取自 NLog 配置，见 App.LogDirectory）。</summary>
+    public RelayCommand OpenLogFolderCommand { get; }
+
+    /// <summary>日志目录：既用于打开目录，也作为按钮提示直接显示路径。</summary>
+    public string LogDirectory => App.LogDirectory;
 
     public RelayCommand ClearRecentProjectsCommand { get; }
 
@@ -830,8 +837,7 @@ public sealed class MainViewModel : ObservableObject
         // 日志文件位置（NLog）：排查现场问题时让用户一眼知道去哪拿日志；写不进去也在这里说清楚。
         if (App.LogProblem is null)
         {
-            AppendLog("[环境] 工具日志：" + Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DotnetPublishTool", "logs"));
+            AppendLog("[环境] 工具日志：" + LogDirectory);
         }
         else
         {
@@ -1194,6 +1200,24 @@ public sealed class MainViewModel : ObservableObject
         }
 
         LogText = string.Empty;
+    }
+
+    /// <summary>在资源管理器里打开日志目录。目录不存在时先建（NLog 也是首次写日志才建），建不出来就说明原因。</summary>
+    private void OpenLogFolder()
+    {
+        var directory = LogDirectory;
+        try
+        {
+            Directory.CreateDirectory(directory);
+        }
+        catch (Exception ex)
+        {
+            _dialogs.ShowInfo("日志目录打不开：" + directory + "（" + ex.Message + "）。");
+            return;
+        }
+
+        Process.Start(new ProcessStartInfo { FileName = directory, UseShellExecute = true });
+        AppendLog("[记录] 已打开日志目录：" + directory);
     }
 
     private void Cancel() => _cancellation?.Cancel();
