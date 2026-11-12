@@ -30,7 +30,6 @@
           <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
-            <RowDefinition Height="Auto" />
           </Grid.RowDefinitions>
 
     <!-- 项目选择 -->
@@ -306,16 +305,6 @@
       </Grid>
       </Border>
     </ScrollViewer>
-
-          <Border Grid.Row="2" Style="{StaticResource Card}" Margin="0,5,0,0" Padding="10,6">
-            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-              <Button Content="保存配置副本" Command="{Binding SaveProfileCommand}" />
-              <Button Content="打开项目地址" Command="{Binding OpenProjectFolderCommand}" />
-              <Button Content="打开输出目录" Command="{Binding OpenOutputFolderCommand}" />
-              <Button Content="生成并发布" Command="{Binding PublishCommand}" FontWeight="Bold"
-                      Background="{StaticResource Accent}" Foreground="White" MinWidth="110" />
-            </StackPanel>
-          </Border>
         </Grid>
       </TabItem>
 
@@ -476,6 +465,23 @@
       <DockPanel>
         <StackPanel Orientation="Horizontal" DockPanel.Dock="Right">
           <Button Content="取消" Command="{Binding CancelCommand}" />
+        </StackPanel>
+        <StackPanel Orientation="Horizontal" DockPanel.Dock="Right">
+          <StackPanel.Style>
+            <Style TargetType="StackPanel">
+              <Setter Property="Visibility" Value="Collapsed" />
+              <Style.Triggers>
+                <DataTrigger Binding="{Binding SelectedIndex, ElementName=MainTabs}" Value="0">
+                  <Setter Property="Visibility" Value="Visible" />
+                </DataTrigger>
+              </Style.Triggers>
+            </Style>
+          </StackPanel.Style>
+          <Button Content="保存配置副本" Command="{Binding SaveProfileCommand}" />
+          <Button Content="打开项目地址" Command="{Binding OpenProjectFolderCommand}" />
+          <Button Content="打开输出目录" Command="{Binding OpenOutputFolderCommand}" />
+          <Button Content="生成并发布" Command="{Binding PublishCommand}" FontWeight="Bold"
+                  Background="{StaticResource Accent}" Foreground="White" MinWidth="110" />
         </StackPanel>
         <StackPanel Orientation="Horizontal" DockPanel.Dock="Right">
           <StackPanel.Style>
