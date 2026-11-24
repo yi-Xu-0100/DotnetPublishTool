@@ -16,6 +16,9 @@ public sealed class PublishResult
     /// <summary>生成的压缩包路径（未打包为 null）。</summary>
     public string? ZipPath { get; init; }
 
+    /// <summary>额外生成的更新包路径（未启用或无变化时为 null）。</summary>
+    public string? UpdateZipPath { get; init; }
+
     /// <summary>生成的 MSI 安装包路径（未生成或生成失败为 null）。</summary>
     public string? MsiPath { get; init; }
 

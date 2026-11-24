@@ -15,6 +15,7 @@ options:
   --out <dir>            输出目录（publish 默认 ./.smoke-out；pack-msi 默认当前目录）
   --profile <name>       指定发布配置名（默认第一个）
   --no-zip               不生成 zip
+  --zip-update-package     仅打包新增或内容变化的文件，追加 _更新包 后缀
   --zip-mode <mode>      ProjectName | ProjectNameVersion | ProjectNameDate | Custom
   --zip-name <name>      Custom 模式使用的名称
   --configuration <cfg>  生成配置（默认取配置或 Release）
@@ -198,6 +199,7 @@ static async Task<int> PublishAsync(List<string> arguments)
         Zip = new ZipOptions
         {
             Enabled = useZip,
+            IncludeUpdatePackage = HasFlag(arguments, "--zip-update-package"),
             NamingMode = zipNamingMode,
             // 与应用默认一致：默认不包含顶层文件夹；加 --zip-root-folder 才包含。
             IncludeRootFolder = HasFlag(arguments, "--zip-root-folder"),
@@ -249,6 +251,7 @@ static async Task<int> PublishAsync(List<string> arguments)
         result.PublishDirectory,
         result.ProfilePath,
         result.ZipPath,
+        result.UpdateZipPath,
         result.MsiPath,
         result.MsiError,
         result.BumpedVersion,

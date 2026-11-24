@@ -125,18 +125,35 @@ public sealed class PublishWorkflow
             log?.Report($"[提示] 该配置的 PublishProtocol={protocol}，本工具统一按文件夹（FileSystem）方式发布。");
         }
 
+        Dictionary<string, string>? previousFiles = null;
+        var stagingDirectory = BuildStagingDirectory(saved.PublishDirectory);
         try
         {
-            if (request.Options.CleanPublishDirectory && Directory.Exists(saved.PublishDirectory))
+            if (request.Zip is { Enabled: true, IncludeUpdatePackage: true })
             {
-                log?.Report("[清理] 删除已有发布目录…");
-                Directory.Delete(saved.PublishDirectory, recursive: true);
+                previousFiles = ZipPackager.Snapshot(saved.PublishDirectory, cancellationToken);
+                log?.Report($"[更新包] 已记录发布前的 {previousFiles.Count} 个文件；首次发布将包含全部文件。");
             }
 
-            Directory.CreateDirectory(saved.PublishDirectory);
+            if (!request.Options.CleanPublishDirectory && Directory.Exists(saved.PublishDirectory))
+            {
+                log?.Report("[准备] --no-clean：把现有发布内容复制到临时目录…");
+                CopyDirectory(saved.PublishDirectory, stagingDirectory, cancellationToken);
+            }
+            else
+            {
+                Directory.CreateDirectory(stagingDirectory);
+            }
+
+        }
+        catch (OperationCanceledException)
+        {
+            TryDeleteDirectory(stagingDirectory);
+            throw;
         }
         catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
         {
+            TryDeleteDirectory(stagingDirectory);
             return new PublishResult
             {
                 Success = false,
@@ -147,19 +164,35 @@ public sealed class PublishWorkflow
                     + "原因：" + OutputDirectoryService.Describe(ex),
             };
         }
+        catch
+        {
+            TryDeleteDirectory(stagingDirectory);
+            throw;
+        }
 
-        var arguments = _commandBuilder.Build(request, saved.ProfilePath, saved.PublishDirectory);
+        var arguments = _commandBuilder.Build(request, saved.ProfilePath, stagingDirectory);
         var commandLine = PublishCommandBuilder.ToDisplayString(arguments);
         log?.Report("[命令] " + commandLine);
 
-        var processResult = await _runner
-            .RunAsync(arguments, request.Project.Directory, log, cancellationToken)
-            .ConfigureAwait(false);
+        ProcessResult processResult;
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            processResult = await _runner
+                .RunAsync(arguments, request.Project.Directory, log, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch
+        {
+            TryDeleteDirectory(stagingDirectory);
+            throw;
+        }
 
         stopwatch.Stop();
 
         if (processResult.ExitCode != 0)
         {
+            TryDeleteDirectory(stagingDirectory);
             return new PublishResult
             {
                 Success = false,
@@ -172,10 +205,37 @@ public sealed class PublishWorkflow
             };
         }
 
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            CommitStagingDirectory(saved.PublishDirectory, stagingDirectory, log);
+        }
+        catch (OperationCanceledException)
+        {
+            TryDeleteDirectory(stagingDirectory);
+            throw;
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
+        {
+            TryDeleteDirectory(stagingDirectory);
+            return new PublishResult
+            {
+                Success = false,
+                ExitCode = -1,
+                PublishDirectory = saved.PublishDirectory,
+                ProfilePath = saved.ProfilePath,
+                CommandLine = commandLine,
+                Duration = stopwatch.Elapsed,
+                ErrorMessage = "发布已完成，但无法替换正式发布目录：" + saved.PublishDirectory + Environment.NewLine
+                    + "原因：" + OutputDirectoryService.Describe(ex),
+            };
+        }
+
         var fileCount = CountFiles(saved.PublishDirectory);
         log?.Report($"[完成] 发布成功，共 {fileCount} 个文件，用时 {stopwatch.Elapsed.TotalSeconds:F1}s。");
 
         string? zipPath = null;
+        string? updateZipPath = null;
         if (request.Zip is { Enabled: true })
         {
             var zip = request.Zip;
@@ -189,6 +249,29 @@ public sealed class PublishWorkflow
             log?.Report("[打包] 正在生成压缩包：" + zipPath);
             _zipPackager.Create(saved.PublishDirectory, zipPath, zip.IncludeRootFolder, request.Project.Name);
             log?.Report("[打包] 完成：" + zipPath);
+
+            if (previousFiles is not null)
+            {
+                var changedFiles = ZipPackager.Snapshot(saved.PublishDirectory, cancellationToken)
+                    .Where(pair => !previousFiles.TryGetValue(pair.Key, out var hash) || hash != pair.Value)
+                    .Select(pair => pair.Key).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                log?.Report($"[更新包] 新增或内容变化：{changedFiles.Count} 个文件；不包含删除操作。");
+                if (changedFiles.Count == 0)
+                {
+                    log?.Report("[更新包] 文件内容无变化，仅跳过更新包，完整压缩包已生成。");
+                }
+                else
+                {
+                    var stem = Path.GetFileNameWithoutExtension(zipPath) + "_更新包";
+                    updateZipPath = Path.Combine(zipDirectory, stem + ".zip");
+                    for (var index = 2; File.Exists(updateZipPath); index++)
+                    {
+                        updateZipPath = Path.Combine(zipDirectory, stem + "_" + index + ".zip");
+                    }
+                    _zipPackager.Create(saved.PublishDirectory, updateZipPath, zip.IncludeRootFolder, request.Project.Name, changedFiles);
+                    log?.Report("[更新包] 完成：" + updateZipPath);
+                }
+            }
         }
 
         // 安装包失败不回滚已经成功的发布：把原因带回去，由界面提示「发布成功但没生成 MSI」。
@@ -277,6 +360,7 @@ public sealed class PublishWorkflow
             PublishDirectory = saved.PublishDirectory,
             ProfilePath = saved.ProfilePath,
             ZipPath = zipPath,
+            UpdateZipPath = updateZipPath,
             MsiPath = msiPath,
             MsiError = msiError,
             BumpedVersion = bumpedVersion,
@@ -403,6 +487,108 @@ public sealed class PublishWorkflow
     /// </summary>
     private static string ResolveOutputRoot(string outputRoot) =>
         Path.GetFullPath(string.IsNullOrWhiteSpace(outputRoot) ? PathLayout.DefaultOutputRoot : outputRoot);
+
+
+    private static string BuildStagingDirectory(string publishDirectory)
+    {
+        var parent = Directory.GetParent(publishDirectory)?.FullName
+            ?? throw new IOException("发布目录没有可用的父目录。");
+        var name = Path.GetFileName(publishDirectory);
+        return Path.Combine(parent, name + ".staging-" + Guid.NewGuid().ToString("N"));
+    }
+
+    private static void CopyDirectory(string source, string destination, CancellationToken cancellationToken)
+    {
+        Directory.CreateDirectory(destination);
+        foreach (var directory in Directory.EnumerateDirectories(source, "*", SearchOption.AllDirectories))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Directory.CreateDirectory(Path.Combine(destination, Path.GetRelativePath(source, directory)));
+        }
+
+        foreach (var file in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var target = Path.Combine(destination, Path.GetRelativePath(source, file));
+            Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+            File.Copy(file, target, overwrite: true);
+        }
+    }
+
+    private static void CommitStagingDirectory(string publishDirectory, string stagingDirectory, IProgress<string>? log)
+    {
+        var backupDirectory = publishDirectory + ".previous-" + Guid.NewGuid().ToString("N");
+        var hadPrevious = Directory.Exists(publishDirectory);
+        var movedPrevious = false;
+        var movedStaging = false;
+        try
+        {
+            if (hadPrevious)
+            {
+                Directory.Move(publishDirectory, backupDirectory);
+                movedPrevious = true;
+            }
+
+            Directory.Move(stagingDirectory, publishDirectory);
+            movedStaging = true;
+        }
+        catch (Exception commitException)
+        {
+            Exception? rollbackException = null;
+            if (movedStaging)
+            {
+                try
+                {
+                    Directory.Delete(publishDirectory, recursive: true);
+                }
+                catch (Exception ex)
+                {
+                    rollbackException = ex;
+                }
+            }
+
+            if (movedPrevious && Directory.Exists(backupDirectory) && !Directory.Exists(publishDirectory))
+            {
+                try
+                {
+                    Directory.Move(backupDirectory, publishDirectory);
+                }
+                catch (Exception ex)
+                {
+                    rollbackException = rollbackException is null
+                        ? ex
+                        : new AggregateException(rollbackException, ex);
+                }
+            }
+
+            if (rollbackException is not null)
+            {
+                throw new IOException(
+                    "发布目录切换失败，且无法自动恢复上一次的发布内容。备份目录仍保留：" + backupDirectory,
+                    new AggregateException(commitException, rollbackException));
+            }
+
+            throw;
+        }
+
+        TryDeleteDirectory(backupDirectory);
+        log?.Report("[切换] 已将成功发布的临时目录切换为正式发布目录。");
+    }
+
+    private static void TryDeleteDirectory(string directory)
+    {
+        try
+        {
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+        catch
+        {
+            // 临时目录清理失败不应覆盖发布失败的原始原因。
+        }
+    }
 
     private static int CountFiles(string directory)
     {

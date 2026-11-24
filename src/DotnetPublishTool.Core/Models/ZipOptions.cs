@@ -32,6 +32,9 @@ public sealed class ZipOptions
     /// <summary>压缩包内是否包含以项目名命名的顶层文件夹；默认不包含（解压即当前目录）。</summary>
     public bool IncludeRootFolder { get; set; }
 
+    /// <summary>在完整 ZIP 之外，同时生成仅含新增或变化文件的更新包。</summary>
+    public bool IncludeUpdatePackage { get; set; }
+
     /// <summary>NamingMode=Custom 时使用。</summary>
     public string? CustomName { get; set; }
 

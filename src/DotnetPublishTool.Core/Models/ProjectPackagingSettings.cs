@@ -9,6 +9,8 @@ public sealed class ProjectPackagingSettings
     public string? CustomZipName { get; set; }
     public bool ZipIncludeRootFolder { get; set; }
 
+    public bool ZipIncludeUpdatePackage { get; set; }
+
     public bool MakeMsi { get; set; }
     public string? MsiProductName { get; set; }
     public string? MsiManufacturer { get; set; }

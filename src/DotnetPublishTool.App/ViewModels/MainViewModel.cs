@@ -59,6 +59,7 @@ public sealed class MainViewModel : ObservableObject
     private string _zipDateFormat = ZipOptions.DefaultDateFormat;
     private string _customZipName = string.Empty;
     private bool _zipIncludeRootFolder;
+    private bool _zipIncludeUpdatePackage;
 
     private bool _makeMsi;
     private string _msiProductName = string.Empty;
@@ -533,6 +534,15 @@ public sealed class MainViewModel : ObservableObject
         }
     }
 
+    public bool ZipIncludeUpdatePackage
+    {
+        get => _zipIncludeUpdatePackage;
+        set
+        {
+            if (SetProperty(ref _zipIncludeUpdatePackage, value)) RebuildPreview();
+        }
+    }
+
     public bool ZipIncludeRootFolder
     {
         get => _zipIncludeRootFolder;
@@ -710,6 +720,7 @@ public sealed class MainViewModel : ObservableObject
             var zip = new ZipOptions
             {
                 NamingMode = ZipNamingMode,
+                IncludeUpdatePackage = ZipIncludeUpdatePackage,
                 DateFormat = string.IsNullOrWhiteSpace(ZipDateFormat) ? ZipOptions.DefaultDateFormat : ZipDateFormat.Trim(),
                 CustomName = NullIfEmpty(CustomZipName),
                 Version = NullIfEmpty(VersionOverride) ?? SelectedProject.Version,
@@ -1078,6 +1089,7 @@ public sealed class MainViewModel : ObservableObject
         ZipNamingMode = settings.ZipNamingMode;
         ZipDateFormat = string.IsNullOrWhiteSpace(settings.ZipDateFormat) ? ZipOptions.DefaultDateFormat : settings.ZipDateFormat;
         ZipIncludeRootFolder = settings.ZipIncludeRootFolder;
+        ZipIncludeUpdatePackage = settings.ZipIncludeUpdatePackage;
         MakeMsi = settings.MakeMsiAfterPublish;
         MsiProductName = settings.MsiProductName ?? string.Empty;
         MsiManufacturer = settings.MsiManufacturer ?? string.Empty;
@@ -1332,6 +1344,11 @@ public sealed class MainViewModel : ObservableObject
                 if (result.ZipPath is not null)
                 {
                     extras.Add("已生成压缩包");
+                }
+
+                if (result.UpdateZipPath is not null)
+                {
+                    extras.Add("已生成更新包");
                 }
 
                 if (result.MsiPath is not null)
@@ -2039,6 +2056,7 @@ public sealed class MainViewModel : ObservableObject
             NamingMode = ZipNamingMode,
             DateFormat = string.IsNullOrWhiteSpace(ZipDateFormat) ? ZipOptions.DefaultDateFormat : ZipDateFormat.Trim(),
             IncludeRootFolder = ZipIncludeRootFolder,
+            IncludeUpdatePackage = ZipIncludeUpdatePackage,
             CustomName = NullIfEmpty(CustomZipName),
             Version = options.VersionOverride ?? project.Version,
         };
@@ -2298,6 +2316,7 @@ public sealed class MainViewModel : ObservableObject
         ZipDateFormat = string.IsNullOrWhiteSpace(ZipDateFormat) ? ZipOptions.DefaultDateFormat : ZipDateFormat,
         CustomZipName = NullIfEmpty(CustomZipName),
         ZipIncludeRootFolder = ZipIncludeRootFolder,
+        ZipIncludeUpdatePackage = ZipIncludeUpdatePackage,
         MakeMsi = MakeMsi,
         MsiProductName = NullIfEmpty(MsiProductName),
         MsiManufacturer = NullIfEmpty(MsiManufacturer),
@@ -2336,6 +2355,7 @@ public sealed class MainViewModel : ObservableObject
         ZipDateFormat = string.IsNullOrWhiteSpace(settings.ZipDateFormat) ? ZipOptions.DefaultDateFormat : settings.ZipDateFormat;
         CustomZipName = settings.CustomZipName ?? string.Empty;
         ZipIncludeRootFolder = settings.ZipIncludeRootFolder;
+        ZipIncludeUpdatePackage = settings.ZipIncludeUpdatePackage;
         MakeMsi = settings.MakeMsi;
         MsiProductName = settings.MsiProductName ?? string.Empty;
         MsiManufacturer = settings.MsiManufacturer ?? string.Empty;
@@ -2360,6 +2380,7 @@ public sealed class MainViewModel : ObservableObject
             ZipNamingMode = ZipNamingMode,
             ZipDateFormat = ZipDateFormat,
             ZipIncludeRootFolder = ZipIncludeRootFolder,
+            ZipIncludeUpdatePackage = ZipIncludeUpdatePackage,
             MakeMsiAfterPublish = MakeMsi,
             MsiProductName = NullIfEmpty(MsiProductName),
             MsiManufacturer = NullIfEmpty(MsiManufacturer),

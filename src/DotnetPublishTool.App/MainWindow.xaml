@@ -131,6 +131,8 @@
             </Grid>
             <CheckBox Content="压缩包内包含以项目名命名的顶层文件夹" IsChecked="{Binding ZipIncludeRootFolder}" Margin="0,8,0,0"
                       ToolTip="默认不勾选：解压出来就是文件本身；勾选后多一层以项目名命名的文件夹" />
+            <CheckBox Content="同时生成更新包（仅含更新内容）" IsChecked="{Binding ZipIncludeUpdatePackage}" IsEnabled="{Binding MakeZip}" Margin="0,6,0,0"
+                      ToolTip="正常生成完整 ZIP，同时额外生成更新包。与发布前目录比较，仅含新增或内容变化文件；首次包含全部文件，无变化仅跳过更新包。后缀为 _更新包，不包含删除操作。" />
             <TextBlock Text="{Binding ZipPathPreview, StringFormat=压缩包：{0}}" TextWrapping="Wrap"
                        Foreground="{StaticResource TextSecondary}" Margin="0,6,0,0" />
           </StackPanel>

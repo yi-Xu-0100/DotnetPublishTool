@@ -4,7 +4,7 @@ namespace DotnetPublishTool.Core.Models;
 public sealed class AppSettings
 {
     /// <summary>当前设置结构版本；用于让新增的默认值在老配置上生效。</summary>
-    public const int CurrentSettingsVersion = 6;
+    public const int CurrentSettingsVersion = 7;
 
     /// <summary>设置结构版本；0 表示旧版（无版本号）。</summary>
     public int SettingsVersion { get; set; }
@@ -19,6 +19,8 @@ public sealed class AppSettings
     public string ZipDateFormat { get; set; } = ZipOptions.DefaultDateFormat;
 
     public bool ZipIncludeRootFolder { get; set; }
+
+    public bool ZipIncludeUpdatePackage { get; set; }
 
     /// <summary>发布成功后是否生成 MSI 安装包。</summary>
     public bool MakeMsiAfterPublish { get; set; }
